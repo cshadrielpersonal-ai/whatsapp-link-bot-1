@@ -1,0 +1,7 @@
+node_modules/
+.env
+session_auth/
+session.tar.gz
+session_base64.txt
+temp_*
+cookies.txt
