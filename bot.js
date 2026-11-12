@@ -1,3 +1,4 @@
+import { execSync } from "child_process";
 import http from 'http';
 
 const PORT = process.env.PORT || 3000;
@@ -26,7 +27,7 @@ import fs from "fs";
 if (process.env.SESSION_DATA && !fs.existsSync("./session_auth/creds.json")) {
   console.log("[Setup] Restoring WhatsApp session from SESSION_DATA...");
   fs.writeFileSync("session.tar.gz", Buffer.from(process.env.SESSION_DATA, "base64"));
-  require("child_process").execSync("tar -xzf session.tar.gz");
+  execSync("tar -xzf session.tar.gz");
 }
 
 import path from "path";
