@@ -1,3 +1,12 @@
+import http from 'http';
+
+const PORT = process.env.PORT || 3000;
+http.createServer((req, res) => {
+  res.writeHead(200, { 'Content-Type': 'text/plain' });
+  res.end('WhatsApp AI Bot is Online!\n');
+}).listen(PORT, '0.0.0.0', () => {
+  console.log(`[Server] Listening on port ${PORT}`);
+});
 process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
 
 import { 
@@ -13,6 +22,13 @@ import readline from "readline";
 import { execFile } from "child_process";
 import { promisify } from "util";
 import fs from "fs";
+
+if (process.env.SESSION_DATA && !fs.existsSync("./session_auth/creds.json")) {
+  console.log("[Setup] Restoring WhatsApp session from SESSION_DATA...");
+  fs.writeFileSync("session.tar.gz", Buffer.from(process.env.SESSION_DATA, "base64"));
+  require("child_process").execSync("tar -xzf session.tar.gz");
+}
+
 import path from "path";
 import "dotenv/config";
 
