@@ -1,5 +1,4 @@
 import { execSync } from "child_process";
-import { execSync } from "child_process";
 import http from 'http';
 
 const PORT = process.env.PORT || 3000;
