@@ -290,7 +290,7 @@ async function startBot() {
           "--max-filesize", "40M",
           "-f", "18/b[ext=mp4][height<=480]/b[ext=mp4]",
           "-o", outFile,
-          sock
+          (text.match(/https?:\/\/[^\s]+/) || [""])[0]
         ];
         if (fs.existsSync("./cookies.txt")) {
           args.unshift("--cookies", "./cookies.txt");
