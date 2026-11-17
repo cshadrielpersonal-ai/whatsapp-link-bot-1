@@ -24,6 +24,12 @@ import { execFile } from "child_process";
 import { promisify } from "util";
 import fs from "fs";
 
+if (process.env.YT_COOKIES && !fs.existsSync("./cookies.txt")) {
+  console.log("[Setup] Restoring cookies.txt from YT_COOKIES...");
+  fs.writeFileSync("./cookies.txt", Buffer.from(process.env.YT_COOKIES, "base64").toString("utf8"));
+}
+
+
 if (process.env.SESSION_DATA && !fs.existsSync("./session_auth/creds.json")) {
   console.log("[Setup] Restoring WhatsApp session from SESSION_DATA...");
   fs.writeFileSync("session.tar.gz", Buffer.from(process.env.SESSION_DATA, "base64"));
