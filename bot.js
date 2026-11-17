@@ -284,26 +284,37 @@ async function startBot() {
         const outFile = `/tmp/yt_${Date.now()}.mp4`;
 
         try {
-          const cookieFlag = fs.existsSync("./cookies.txt") ? "--cookies ./cookies.txt" : "";
-          execSync(
-            `yt-dlp ${cookieFlag} -f "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[height<=720][ext=mp4]/best" --merge-output-format mp4 --max-filesize 45M -o "${outFile}" "${url}"`,
-            { encoding: "utf8", timeout: 90000 }
-          );
+          const args = [
+          "--no-playlist",
+          "--no-warnings",
+          "--max-filesize", "40M",
+          "-f", "18/b[ext=mp4][height<=480]/b[ext=mp4]",
+          "-o", outFile,
+          ytUrl
+        ];
+        if (fs.existsSync("./cookies.txt")) {
+          args.unshift("--cookies", "./cookies.txt");
+        }
 
-          if (!fs.existsSync(outFile)) {
-            throw new Error("Video exceeded 45MB limit or failed to download.");
-          }
+        await new Promise((resolve, reject) => {
+          execFile("yt-dlp", args, { timeout: 45000, maxBuffer: 1024 * 1024 }, (err, stdout, stderr) => {
+            if (err) {
+              err.stderr = stderr;
+              reject(err);
+            } else {
+              resolve(stdout);
+            }
+          });
+        });
 
-          await sock.sendMessage(
-            remoteJid,
-            { video: fs.readFileSync(outFile), caption: "✅ Downloaded via WhatsApp Bot" },
-            { quoted: msg }
-          );
-          fs.unlinkSync(outFile);
-        } catch (err) {
-          if (fs.existsSync(outFile)) fs.unlinkSync(outFile);
-          const detail = (err.stderr || err.message || "").split("\n").filter(Boolean).slice(-2).join(" ");
-          await sock.sendMessage(remoteJid, { text: `❌ Download failed: ${detail}` }, { quoted: msg });
+        await sock.sendMessage(
+          remoteJid,
+          { video: fs.readFileSync(outFile), mimetype: "video/mp4", caption: "🎬 Downloaded via WhatsApp AI Bot" },
+          { quoted: msg }
+        );
+      } catch (err) {
+        const detail = (err.stderr || err.message || "").split("\n").filter(Boolean).slice(-2).join(" ");
+        await sock.sendMessage(remoteJid, { text: `❌ Download failed: ${detail}` }, { quoted: msg });
         }
         continue;
       }
