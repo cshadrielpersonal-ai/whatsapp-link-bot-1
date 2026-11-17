@@ -252,9 +252,57 @@ async function startBot() {
             if (!text) continue;
 
       const cleanText = text.trim();
-      if (!cleanText.startsWith(".ai")) continue;
-
+      const lowerText = cleanText.toLowerCase();
       const remoteJid = msg.key.remoteJid;
+
+      // 1. .menu command
+      if (lowerText === ".menu") {
+        const menuText = `🤖 *WHATSAPP AI BOT MENU* 🤖
+
+• *.ai <question>* — Ask Gemini AI anything
+• *.shorts <youtube-link>* — Download any YouTube video or Short
+• *.menu* — Show this command list`;
+        await sock.sendMessage(remoteJid, { text: menuText }, { quoted: msg });
+        continue;
+      }
+
+      // 2. .shorts <youtube-link> command
+      if (lowerText.startsWith(".shorts")) {
+        const url = cleanText.slice(7).trim();
+        if (!url || (!url.includes("youtube.com") && !url.includes("youtu.be"))) {
+          await sock.sendMessage(remoteJid, { text: "❌ Please send a valid YouTube link.\nExample: *.shorts https://youtube.com/shorts/...*" }, { quoted: msg });
+          continue;
+        }
+
+        await sock.sendMessage(remoteJid, { text: "⏳ Downloading video, please wait..." }, { quoted: msg });
+        const outFile = `/tmp/yt_${Date.now()}.mp4`;
+
+        try {
+          const cookieFlag = fs.existsSync("./cookies.txt") ? "--cookies ./cookies.txt" : "";
+          execSync(
+            `yt-dlp ${cookieFlag} -f "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[height<=720][ext=mp4]/best" --merge-output-format mp4 --max-filesize 45M -o "${outFile}" "${url}"`,
+            { stdio: "ignore", timeout: 90000 }
+          );
+
+          if (!fs.existsSync(outFile)) {
+            throw new Error("Video exceeded 45MB limit or failed to download.");
+          }
+
+          await sock.sendMessage(
+            remoteJid,
+            { video: fs.readFileSync(outFile), caption: "✅ Downloaded via WhatsApp Bot" },
+            { quoted: msg }
+          );
+          fs.unlinkSync(outFile);
+        } catch (err) {
+          if (fs.existsSync(outFile)) fs.unlinkSync(outFile);
+          await sock.sendMessage(remoteJid, { text: `❌ Download failed: ${err.message}` }, { quoted: msg });
+        }
+        continue;
+      }
+
+      // 3. Only listen to .ai messages for Gemini
+      if (!lowerText.startsWith(".ai")) continue;
       const query = cleanText.slice(3).trim();
 
       if (!query) {
