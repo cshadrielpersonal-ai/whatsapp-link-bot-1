@@ -287,6 +287,7 @@ async function startBot() {
           const args = [
           "--no-playlist",
           "--no-warnings",
+          "--js-runtimes", "node",
           "--max-filesize", "40M",
           "-f", "18/b[ext=mp4][height<=480]/b[ext=mp4]",
           "-o", outFile,
