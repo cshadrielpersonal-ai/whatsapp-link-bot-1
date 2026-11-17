@@ -287,7 +287,7 @@ async function startBot() {
           const cookieFlag = fs.existsSync("./cookies.txt") ? "--cookies ./cookies.txt" : "";
           execSync(
             `yt-dlp ${cookieFlag} --extractor-args "youtube:player_client=android,web" -f "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[height<=720][ext=mp4]/best" --merge-output-format mp4 --max-filesize 45M -o "${outFile}" "${url}"`,
-            { stdio: "ignore", timeout: 90000 }
+            { encoding: "utf8", timeout: 90000 }
           );
 
           if (!fs.existsSync(outFile)) {
@@ -302,7 +302,8 @@ async function startBot() {
           fs.unlinkSync(outFile);
         } catch (err) {
           if (fs.existsSync(outFile)) fs.unlinkSync(outFile);
-          await sock.sendMessage(remoteJid, { text: `❌ Download failed: ${err.message}` }, { quoted: msg });
+          const detail = (err.stderr || err.message || "").split("\n").filter(Boolean).slice(-2).join(" ");
+          await sock.sendMessage(remoteJid, { text: `❌ Download failed: ${detail}` }, { quoted: msg });
         }
         continue;
       }
