@@ -286,7 +286,7 @@ async function startBot() {
         try {
           const cookieFlag = fs.existsSync("./cookies.txt") ? "--cookies ./cookies.txt" : "";
           execSync(
-            `yt-dlp ${cookieFlag} --extractor-args "youtube:player_client=android,web" -f "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[height<=720][ext=mp4]/best" --merge-output-format mp4 --max-filesize 45M -o "${outFile}" "${url}"`,
+            `yt-dlp ${cookieFlag} -f "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[height<=720][ext=mp4]/best" --merge-output-format mp4 --max-filesize 45M -o "${outFile}" "${url}"`,
             { encoding: "utf8", timeout: 90000 }
           );
 
