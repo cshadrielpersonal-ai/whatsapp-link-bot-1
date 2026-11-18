@@ -287,6 +287,7 @@ async function startBot() {
           const args = [
           "--no-playlist",
           "--no-warnings",
+          "--extractor-args", "youtube:player_client=tv_embedded,mweb,web",
           "--js-runtimes", "node",
           "--max-filesize", "40M",
           "-f", "18/b[ext=mp4][height<=480]/b[ext=mp4]",
