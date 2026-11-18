@@ -90,226 +90,47 @@ async function downloadYouTubeVideo(youtubeUrl) {
 
   const qualityTarget = isLongVideo ? "res:360,fps:30" : "res:720,fps:30";
 
-  const args = [
-    ...baseArgs,
-    "-f", "bv*+ba/b",
-    "-S", qualityTarget,
-    "--recode-video", "mp4",
-    "-o", tempFile,
-    youtubeUrl
-  ];
+  const rawUrl = (text.match(/https?:\/\/[^\s]+/) || [""])[0];
+        const idMatch = rawUrl.match(/(?:shorts\/|v=|youtu\.be\/)([a-zA-Z0-9_-]{11})/);
+        if (!idMatch) throw new Error("Invalid YouTube link.");
+        const videoId = idMatch[1];
 
-  await execFileAsync("yt-dlp", args, { timeout: 1200000 });
+        const pipedInstances = [
+          "https://pipedapi.kavin.rocks",
+          "https://pipedapi.tokhmi.xyz",
+          "https://pipedapi.moomoo.me",
+          "https://api.piped.projectsegfau.lt"
+        ];
 
-  if (!fs.existsSync(tempFile)) {
-    throw new Error("Downloaded file not found.");
-  }
+        let streamUrl = null;
+        let title = "YouTube Short";
 
-  return { tempFile, isLongVideo };
-}
-
-async function askAI(chatId, prompt) {
-  try {
-    if (!chatHistory.has(chatId)) chatHistory.set(chatId, []);
-    const history = chatHistory.get(chatId);
-
-    history.push({ role: "user", parts: [{ text: prompt }] });
-
-    const apiKey = process.env.GEMINI_API_KEY;
-    const endpoint = "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent?key=" + apiKey;
-
-    const payload = JSON.stringify({
-      contents: history,
-      generationConfig: {
-        maxOutputTokens: 400
-      }
-    });
-
-    const response = await new Promise((resolve, reject) => {
-      const child = execFile("curl", [
-        "-s",
-        "-m", "30",
-        "-X", "POST",
-        endpoint,
-        "-H", "Content-Type: application/json",
-        "--data-binary", "@-"
-      ], (error, stdout, stderr) => {
-        if (error && !stdout) return reject(error);
-        resolve(stdout);
-      });
-
-      child.stdin.write(payload);
-      child.stdin.end();
-    });
-
-    if (!response || !response.trim()) {
-      return "⚠️ Request timed out. Please try again.";
-    }
-
-    const data = JSON.parse(response);
-
-    if (data.error) {
-      console.error("[AI Error API]:", data.error.message || JSON.stringify(data.error));
-      return "⚠️ " + (data.error.message || "API error.");
-    }
-
-    const candidate = data.candidates?.[0]?.content?.parts;
-    let replyText = "";
-    if (Array.isArray(candidate)) {
-      replyText = candidate.map(p => p.text || "").join("").trim();
-    }
-
-    if (!replyText) replyText = "No response generated.";
-
-    history.push({ role: "model", parts: [{ text: replyText }] });
-
-    if (history.length > MAX_HISTORY) {
-      chatHistory.set(chatId, history.slice(-MAX_HISTORY));
-    }
-
-    return replyText;
-  } catch (err) {
-    console.error("[AI Error]:", err.message || err);
-    return "Server busy. Please try again.";
-  }
-}
-
-const MENU_TEXT = `╭─〔 Shiroine 〕
-│ User: Hadriel
-│ Status: Active
-│ Engine: Authenticated yt-dlp + Gemini AI
-╰──────────
-
-╭─〔 DOWNLOADER 〕
-│ .shorts <youtube_url>
-│ .ytmp4 <youtube_url>
-╰──────────
-╭─〔 UTILITIES 〕
-│ .del / .delete (Reply to message)
-│ .ai <prompt>
-│ .reset (Clear Memory)
-│ .ping
-│ .menu
-╰──────────`;
-
-async function startBot() {
-  const { state, saveCreds } = await useMultiFileAuthState("./session_auth");
-
-  const sock = makeWASocket({
-    auth: {
-      creds: state.creds,
-      keys: makeCacheableSignalKeyStore(state.keys, logger),
-    },
-    logger: logger,
-    printQRInTerminal: false,
-    browser: Browsers.ubuntu("Chrome"),
-    syncFullHistory: false,
-    connectTimeoutMs: 60000,
-    keepAliveIntervalMs: 30000,
-    retryRequestDelayMs: 250,
-  });
-
-  if (!sock.authState.creds.registered) {
-    const rawNumber = await question("\nEnter your WhatsApp phone number with country code (e.g. 919876543210): ");
-    const phoneNumber = rawNumber.replace(/[^0-9]/g, "");
-    
-    setTimeout(async () => {
-      try {
-        const code = await sock.requestPairingCode(phoneNumber);
-        const formattedCode = code?.match(/.{1,4}/g)?.join("-") || code;
-        console.log("\n=================================");
-        console.log("YOUR PAIRING CODE IS:", formattedCode);
-        console.log("=================================\n");
-      } catch (err) {
-        console.error("Failed to get pairing code:", err.message);
-      }
-    }, 3000);
-  }
-
-  sock.ev.on("connection.update", (update) => {
-    const { connection, lastDisconnect } = update;
-    if (connection === "connecting") {
-      console.log("[Status] Connecting...");
-    }
-    if (connection === "close") {
-      const statusCode = lastDisconnect?.error?.output?.statusCode;
-      if (statusCode !== DisconnectReason.loggedOut) {
-        console.log("Reconnecting in 3s...");
-        setTimeout(() => startBot(), 3000);
-      } else {
-        console.log("[Status] Logged out. Delete session_auth and run again.");
-      }
-    } else if (connection === "open") {
-      console.log("\n[ONLINE] Bot ready with .delete command!\n");
-    }
-  });
-
-  sock.ev.on("creds.update", saveCreds);
-
-  sock.ev.on("messages.upsert", async ({ messages, type }) => {
-    if (type !== "notify") return;
-
-    for (const msg of messages) {
-      const text =
-        msg.message?.conversation ||
-        msg.message?.extendedTextMessage?.text ||
-        "";
-
-            if (!text) continue;
-
-      const cleanText = text.trim();
-      const lowerText = cleanText.toLowerCase();
-      const remoteJid = msg.key.remoteJid;
-
-      // 1. .menu command
-      if (lowerText === ".menu") {
-        const menuText = `🤖 *WHATSAPP AI BOT MENU* 🤖
-
-• *.ai <question>* — Ask Gemini AI anything
-• *.shorts <youtube-link>* — Download any YouTube video or Short
-• *.menu* — Show this command list`;
-        await sock.sendMessage(remoteJid, { text: menuText }, { quoted: msg });
-        continue;
-      }
-
-      // 2. .shorts <youtube-link> command
-      if (lowerText.startsWith(".shorts")) {
-        const url = cleanText.slice(7).trim();
-        if (!url || (!url.includes("youtube.com") && !url.includes("youtu.be"))) {
-          await sock.sendMessage(remoteJid, { text: "❌ Please send a valid YouTube link.\nExample: *.shorts https://youtube.com/shorts/...*" }, { quoted: msg });
-          continue;
+        for (const base of pipedInstances) {
+          try {
+            const res = await fetch(`${base}/streams/${videoId}`, { signal: AbortSignal.timeout(8000) });
+            if (!res.ok) continue;
+            const data = await res.json();
+            title = data.title || title;
+            const mp4 = (data.videoStreams || []).find(s => !s.videoOnly && s.format === "MPEG_4")
+                     || (data.videoStreams || []).find(s => !s.videoOnly);
+            if (mp4 && mp4.url) {
+              streamUrl = mp4.url;
+              break;
+            }
+          } catch (_) {}
         }
 
-        await sock.sendMessage(remoteJid, { text: "⏳ Downloading video, please wait..." }, { quoted: msg });
-        const outFile = `/tmp/yt_${Date.now()}.mp4`;
+        if (!streamUrl) {
+          throw new Error("All video mirrors are busy right now. Try again in a moment.");
+        }
 
-        try {
-          const args = [
-          "--no-playlist",
-          "--no-warnings",
-          "--extractor-args", "youtube:player_client=android_vr,ios",
-          "--js-runtimes", "node",
-          "--max-filesize", "40M",
-          "-f", "18/b[ext=mp4][height<=480]/b[ext=mp4]",
-          "-o", outFile,
-          (text.match(/https?:\/\/[^\s]+/) || [""])[0]
-        ];
-        // Skipping cookies so android_vr/ios clients work without PO token
-
-        await new Promise((resolve, reject) => {
-          execFile("yt-dlp", args, { timeout: 45000, maxBuffer: 1024 * 1024 }, (err, stdout, stderr) => {
-            if (err) {
-              err.stderr = stderr;
-              reject(err);
-            } else {
-              resolve(stdout);
-            }
-          });
-        });
+        const vidRes = await fetch(streamUrl, { signal: AbortSignal.timeout(25000) });
+        if (!vidRes.ok) throw new Error(`Stream download failed (${vidRes.status})`);
+        const videoBuffer = Buffer.from(await vidRes.arrayBuffer());
 
         await sock.sendMessage(
           remoteJid,
-          { video: fs.readFileSync(outFile), mimetype: "video/mp4", caption: "🎬 Downloaded via WhatsApp AI Bot" },
+          { video: videoBuffer, mimetype: "video/mp4", caption: `🎬 ${title}` },
           { quoted: msg }
         );
       } catch (err) {
