@@ -287,16 +287,14 @@ async function startBot() {
           const args = [
           "--no-playlist",
           "--no-warnings",
-          "--extractor-args", "youtube:player_client=tv_embedded,mweb,web",
+          "--extractor-args", "youtube:player_client=android_vr,ios",
           "--js-runtimes", "node",
           "--max-filesize", "40M",
           "-f", "18/b[ext=mp4][height<=480]/b[ext=mp4]",
           "-o", outFile,
           (text.match(/https?:\/\/[^\s]+/) || [""])[0]
         ];
-        if (fs.existsSync("./cookies.txt")) {
-          args.unshift("--cookies", "./cookies.txt");
-        }
+        // Skipping cookies so android_vr/ios clients work without PO token
 
         await new Promise((resolve, reject) => {
           execFile("yt-dlp", args, { timeout: 45000, maxBuffer: 1024 * 1024 }, (err, stdout, stderr) => {
