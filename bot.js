@@ -11,7 +11,8 @@ http.createServer((req, res) => {
 process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
 
 import { 
-  makeWASocket, 
+  makeWASocket,
+  fetchLatestBaileysVersion, 
   useMultiFileAuthState, 
   DisconnectReason, 
   Browsers, 
