@@ -306,6 +306,7 @@ async function startBot() {
             "--no-playlist",
             "--no-warnings",
             "--max-filesize", "40M",
+            "--js-runtimes", "node",
             "-f", "18/b[ext=mp4][height<=480]/b[ext=mp4]",
             "-o", outFile
           ];
@@ -332,7 +333,9 @@ async function startBot() {
           );
           if (fs.existsSync(outFile)) fs.unlinkSync(outFile);
         } catch (err) {
-        const detail = (err.stderr || err.message || "").split("\n").filter(Boolean).slice(-2).join(" ");
+        const lines = (err.stderr || err.message || "").split("\n").filter(Boolean);
+        const errLine = lines.find(l => l.includes("ERROR:")) || lines.slice(-2).join(" ");
+        const detail = errLine;
         await sock.sendMessage(remoteJid, { text: `❌ Download failed: ${detail}` }, { quoted: msg });
         }
         continue;
