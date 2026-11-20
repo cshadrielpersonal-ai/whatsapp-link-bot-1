@@ -270,6 +270,7 @@ async function startBot() {
       const text =
         msg.message?.conversation ||
         msg.message?.extendedTextMessage?.text ||
+        msg.message?.imageMessage?.caption ||
         "";
 
             if (!text) continue;
@@ -280,92 +281,134 @@ async function startBot() {
 
       // 1. .menu command
       if (lowerText === ".menu") {
-        const menuText = `🤖 *WHATSAPP AI BOT MENU* 🤖
+        const menuText = `🤖 *SHIROINE AI BOT MENU* 🤖
 
 • *.ai <question>* — Ask Gemini AI anything
-• *.shorts <youtube-link>* — Download any YouTube video or Short
+• *.ai <question>* (on/reply to photo) — Describe or analyze a photo
+• *.draw <description>* — Generate a new AI image
+• *.cartoon* (on/reply to photo) — Turn any photo into cartoon style
+• *.reset* — Clear AI chat memory
+• *.del* (reply) — Delete a bot message
+• *.ping* — Check bot status
 • *.menu* — Show this command list`;
         await sock.sendMessage(remoteJid, { text: menuText }, { quoted: msg });
         continue;
       }
 
-      // 2. .shorts <youtube-link> command
-      if (lowerText.startsWith(".shorts")) {
-        const url = cleanText.slice(7).trim();
-        if (!url || (!url.includes("youtube.com") && !url.includes("youtu.be"))) {
-          await sock.sendMessage(remoteJid, { text: "❌ Please send a valid YouTube link.\nExample: *.shorts https://youtube.com/shorts/...*" }, { quoted: msg });
+      // 2A. .draw <description> command
+      if (lowerText.startsWith(".draw")) {
+        const prompt = cleanText.slice(5).trim();
+        if (!prompt) {
+          await sock.sendMessage(remoteJid, { text: "⚠️ Please describe what to draw.\nExample: *.draw a futuristic city at sunset*" }, { quoted: msg });
           continue;
         }
-
-        await sock.sendMessage(remoteJid, { text: "⏳ Downloading video, please wait..." }, { quoted: msg });
+        await sock.sendMessage(remoteJid, { text: "🎨 Creating your image, please wait..." }, { quoted: msg });
         try {
-          const rawUrl = (text.match(/https?:\/\/[^\s]+/) || [""])[0];
-          const idMatch = rawUrl.match(/(?:shorts\/|v=|youtu\.be\/)([a-zA-Z0-9_-]{11})/);
-          if (!idMatch) throw new Error("Invalid YouTube link.");
-          const videoId = idMatch[1];
-
-          let streamUrl = null;
-          let title = "YouTube Short";
-
-          const clients = [
-            {
-              name: "ANDROID_VR",
-              id: "28",
-              ver: "1.56.21",
-              ua: "com.google.android.apps.youtube.vr.oculus/1.56.21 (Linux; U; Android 12L; eureka-user Build/SQ3A.220605.009.A1) gzip",
-              ctx: { client: { clientName: "ANDROID_VR", clientVersion: "1.56.21", androidSdkVersion: 32, osName: "Android", osVersion: "12L", hl: "en", gl: "US" } }
-            },
-            {
-              name: "IOS",
-              id: "5",
-              ver: "19.29.1",
-              ua: "com.google.ios.youtube/19.29.1 (iPhone16,2; U; CPU iOS 17_5_1 like Mac OS X;)",
-              ctx: { client: { clientName: "IOS", clientVersion: "19.29.1", deviceMake: "Apple", deviceModel: "iPhone16,2", osName: "iPhone", osVersion: "17.5.1.21F90", hl: "en", gl: "US" } }
-            }
-          ];
-
-          for (const c of clients) {
-            const res = await fetch("https://www.youtube.com/youtubei/v1/player?prettyPrint=false", {
-              method: "POST",
-              headers: {
-                "Content-Type": "application/json",
-                "User-Agent": c.ua,
-                "X-YouTube-Client-Name": c.id,
-                "X-YouTube-Client-Version": c.ver
-              },
-              body: JSON.stringify({ videoId, context: c.ctx }),
-              signal: AbortSignal.timeout(10000)
-            });
-            if (!res.ok) continue;
-            const data = await res.json();
-            title = data.videoDetails?.title || title;
-            const mp4 = (data.streamingData?.formats || []).find(f => f.mimeType?.includes("video/mp4") && f.url);
-            if (mp4?.url) {
-              streamUrl = mp4.url;
-              break;
-            }
-          }
-
-          if (!streamUrl) {
-            throw new Error("YouTube blocked datacenter stream extraction (LOGIN_REQUIRED).");
-          }
-
-          const vidRes = await fetch(streamUrl, {
-            headers: { "User-Agent": clients[0].ua },
-            signal: AbortSignal.timeout(25000)
+          const apiKey = process.env.GEMINI_API_KEY;
+          const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-image:generateContent?key=${apiKey}`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              contents: [{ parts: [{ text: `Generate a high quality image: ${prompt}` }] }]
+            })
           });
-          if (!vidRes.ok) throw new Error(`Stream HTTP ${vidRes.status}`);
-          const videoBuffer = Buffer.from(await vidRes.arrayBuffer());
-
-          await sock.sendMessage(
-            remoteJid,
-            { video: videoBuffer, mimetype: "video/mp4", caption: `🎬 ${title}` },
-            { quoted: msg }
-          );
+          const data = await res.json();
+          if (!res.ok) throw new Error(data.error?.message || "Image generation failed");
+          const parts = data.candidates?.[0]?.content?.parts || [];
+          const imgPart = parts.find(p => p.inlineData?.data);
+          if (!imgPart) throw new Error("No image returned by Gemini.");
+          const imgBuffer = Buffer.from(imgPart.inlineData.data, "base64");
+          await sock.sendMessage(remoteJid, { image: imgBuffer, caption: `🎨 *${prompt}*` }, { quoted: msg });
         } catch (err) {
-          await sock.sendMessage(remoteJid, { text: `❌ Download failed: ${err.message}` }, { quoted: msg });
+          await sock.sendMessage(remoteJid, { text: `❌ Drawing failed: ${err.message}` }, { quoted: msg });
         }
         continue;
+      }
+
+      // 2B. .cartoon command (edit photo in chat to cartoon style)
+      if (lowerText.startsWith(".cartoon")) {
+        const quoted = msg.message?.extendedTextMessage?.contextInfo?.quotedMessage;
+        const imgMsg = msg.message?.imageMessage || quoted?.imageMessage;
+        if (!imgMsg) {
+          await sock.sendMessage(remoteJid, { text: "⚠️ Reply to any photo with *.cartoon* (or send a photo with *.cartoon* as caption)!" }, { quoted: msg });
+          continue;
+        }
+        await sock.sendMessage(remoteJid, { text: "✨ Turning photo into cartoon style, please wait..." }, { quoted: msg });
+        try {
+          const { downloadContentFromMessage } = await import("@whiskeysockets/baileys");
+          const stream = await downloadContentFromMessage(imgMsg, "image");
+          let buffer = Buffer.alloc(0);
+          for await (const chunk of stream) {
+            buffer = Buffer.concat([buffer, chunk]);
+          }
+          const mimeType = imgMsg.mimetype || "image/jpeg";
+          const extraNote = cleanText.slice(8).trim();
+          const stylePrompt = extraNote
+            ? `Transform this photo into a vibrant, expressive cartoon/anime illustration style (${extraNote}), keeping the exact same person/subject, pose, and background.`
+            : "Transform this photo into a vibrant, colorful cartoon and anime illustration style with clean outlines and expressive shading, keeping the exact same person/subject, pose, and background.";
+
+          const apiKey = process.env.GEMINI_API_KEY;
+          const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-image:generateContent?key=${apiKey}`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              contents: [{
+                parts: [
+                  { inlineData: { mimeType, data: buffer.toString("base64") } },
+                  { text: stylePrompt }
+                ]
+              }]
+            })
+          });
+          const data = await res.json();
+          if (!res.ok) throw new Error(data.error?.message || "Cartoon edit failed");
+          const parts = data.candidates?.[0]?.content?.parts || [];
+          const outPart = parts.find(p => p.inlineData?.data);
+          if (!outPart) throw new Error("Could not generate cartoon image.");
+          const imgBuffer = Buffer.from(outPart.inlineData.data, "base64");
+          await sock.sendMessage(remoteJid, { image: imgBuffer, caption: "✨ *Cartoon Style Applied!*" }, { quoted: msg });
+        } catch (err) {
+          await sock.sendMessage(remoteJid, { text: `❌ Cartoon edit failed: ${err.message}` }, { quoted: msg });
+        }
+        continue;
+      }
+
+      // 2C. .ai with an attached or replied-to photo (describe/analyze image)
+      if (lowerText.startsWith(".ai")) {
+        const quoted = msg.message?.extendedTextMessage?.contextInfo?.quotedMessage;
+        const imgMsg = msg.message?.imageMessage || quoted?.imageMessage;
+        if (imgMsg) {
+          const questionText = cleanText.slice(3).trim() || "Describe this photo in detail.";
+          try {
+            const { downloadContentFromMessage } = await import("@whiskeysockets/baileys");
+            const stream = await downloadContentFromMessage(imgMsg, "image");
+            let buffer = Buffer.alloc(0);
+            for await (const chunk of stream) {
+              buffer = Buffer.concat([buffer, chunk]);
+            }
+            const mimeType = imgMsg.mimetype || "image/jpeg";
+            const apiKey = process.env.GEMINI_API_KEY;
+            const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                contents: [{
+                  parts: [
+                    { inlineData: { mimeType, data: buffer.toString("base64") } },
+                    { text: questionText }
+                  ]
+                }]
+              })
+            });
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.error?.message || "Image analysis failed");
+            const reply = data.candidates?.[0]?.content?.parts?.map(p => p.text || "").join("").trim() || "Could not describe this image.";
+            await sock.sendMessage(remoteJid, { text: reply }, { quoted: msg });
+          } catch (err) {
+            await sock.sendMessage(remoteJid, { text: `❌ Image analysis failed: ${err.message}` }, { quoted: msg });
+          }
+          continue;
+        }
       }
 
       // 3. Only listen to .ai messages for Gemini
