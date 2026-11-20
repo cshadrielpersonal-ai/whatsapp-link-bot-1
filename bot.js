@@ -295,7 +295,7 @@ async function startBot() {
         continue;
       }
 
-      // 2A. .draw <description> command
+      // 2A. .draw <description> command (Free Tier - no billing required)
       if (lowerText.startsWith(".draw")) {
         const prompt = cleanText.slice(5).trim();
         if (!prompt) {
@@ -304,20 +304,11 @@ async function startBot() {
         }
         await sock.sendMessage(remoteJid, { text: "🎨 Creating your image, please wait..." }, { quoted: msg });
         try {
-          const apiKey = process.env.GEMINI_API_KEY;
-          const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-image:generateContent?key=${apiKey}`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              contents: [{ parts: [{ text: `Generate a high quality image: ${prompt}` }] }]
-            })
-          });
-          const data = await res.json();
-          if (!res.ok) throw new Error(data.error?.message || "Image generation failed");
-          const parts = data.candidates?.[0]?.content?.parts || [];
-          const imgPart = parts.find(p => p.inlineData?.data);
-          if (!imgPart) throw new Error("No image returned by Gemini.");
-          const imgBuffer = Buffer.from(imgPart.inlineData.data, "base64");
+          const seed = Math.floor(Math.random() * 1000000);
+          const imgUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}?width=1024&height=1024&seed=${seed}&nologo=true`;
+          const res = await fetch(imgUrl, { signal: AbortSignal.timeout(30000) });
+          if (!res.ok) throw new Error(`Image server returned HTTP ${res.status}`);
+          const imgBuffer = Buffer.from(await res.arrayBuffer());
           await sock.sendMessage(remoteJid, { image: imgBuffer, caption: `🎨 *${prompt}*` }, { quoted: msg });
         } catch (err) {
           await sock.sendMessage(remoteJid, { text: `❌ Drawing failed: ${err.message}` }, { quoted: msg });
@@ -325,7 +316,7 @@ async function startBot() {
         continue;
       }
 
-      // 2B. .cartoon command (edit photo in chat to cartoon style)
+      // 2B. .cartoon command (Uses free-tier Gemini Vision + Cartoon Renderer)
       if (lowerText.startsWith(".cartoon")) {
         const quoted = msg.message?.extendedTextMessage?.contextInfo?.quotedMessage;
         const imgMsg = msg.message?.imageMessage || quoted?.imageMessage;
@@ -342,30 +333,34 @@ async function startBot() {
             buffer = Buffer.concat([buffer, chunk]);
           }
           const mimeType = imgMsg.mimetype || "image/jpeg";
-          const extraNote = cleanText.slice(8).trim();
-          const stylePrompt = extraNote
-            ? `Transform this photo into a vibrant, expressive cartoon/anime illustration style (${extraNote}), keeping the exact same person/subject, pose, and background.`
-            : "Transform this photo into a vibrant, colorful cartoon and anime illustration style with clean outlines and expressive shading, keeping the exact same person/subject, pose, and background.";
-
           const apiKey = process.env.GEMINI_API_KEY;
-          const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-image:generateContent?key=${apiKey}`, {
+
+          // Step 1: Analyze photo details using free-tier gemini-2.5-flash
+          const visionRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
               contents: [{
                 parts: [
                   { inlineData: { mimeType, data: buffer.toString("base64") } },
-                  { text: stylePrompt }
+                  { text: "Write a concise 40-word visual image prompt describing the exact subject, face/hair/clothing, pose, colors, and background in this photo so an artist can draw it in vibrant 2D cartoon anime style. Output ONLY the prompt." }
                 ]
               }]
             })
           });
-          const data = await res.json();
-          if (!res.ok) throw new Error(data.error?.message || "Cartoon edit failed");
-          const parts = data.candidates?.[0]?.content?.parts || [];
-          const outPart = parts.find(p => p.inlineData?.data);
-          if (!outPart) throw new Error("Could not generate cartoon image.");
-          const imgBuffer = Buffer.from(outPart.inlineData.data, "base64");
+          const visionData = await visionRes.json();
+          if (!visionRes.ok) throw new Error(visionData.error?.message || "Vision analysis failed");
+          const sceneDesc = visionData.candidates?.[0]?.content?.parts?.map(p => p.text || "").join("").trim();
+          if (!sceneDesc) throw new Error("Could not read photo details.");
+
+          // Step 2: Render the cartoon illustration
+          const cartoonPrompt = `vibrant colorful 2D cartoon anime illustration, clean bold outlines, studio anime shading, ${sceneDesc}`;
+          const seed = Math.floor(Math.random() * 1000000);
+          const imgUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(cartoonPrompt)}?width=1024&height=1024&seed=${seed}&nologo=true`;
+          const imgRes = await fetch(imgUrl, { signal: AbortSignal.timeout(30000) });
+          if (!imgRes.ok) throw new Error(`Cartoon renderer returned HTTP ${imgRes.status}`);
+          const imgBuffer = Buffer.from(await imgRes.arrayBuffer());
+
           await sock.sendMessage(remoteJid, { image: imgBuffer, caption: "✨ *Cartoon Style Applied!*" }, { quoted: msg });
         } catch (err) {
           await sock.sendMessage(remoteJid, { text: `❌ Cartoon edit failed: ${err.message}` }, { quoted: msg });
