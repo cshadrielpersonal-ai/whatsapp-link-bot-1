@@ -267,10 +267,19 @@ async function startBot() {
     if (type !== "notify") return;
 
     for (const msg of messages) {
+      const unwrap = (m) => {
+        if (!m) return {};
+        if (m.ephemeralMessage?.message) return unwrap(m.ephemeralMessage.message);
+        if (m.viewOnceMessage?.message) return unwrap(m.viewOnceMessage.message);
+        if (m.viewOnceMessageV2?.message) return unwrap(m.viewOnceMessageV2.message);
+        if (m.documentWithCaptionMessage?.message) return unwrap(m.documentWithCaptionMessage.message);
+        return m;
+      };
+      const innerMsg = unwrap(msg.message);
       const text =
-        msg.message?.conversation ||
-        msg.message?.extendedTextMessage?.text ||
-        msg.message?.imageMessage?.caption ||
+        innerMsg?.conversation ||
+        innerMsg?.extendedTextMessage?.text ||
+        innerMsg?.imageMessage?.caption ||
         "";
 
             if (!text) continue;
@@ -318,8 +327,8 @@ async function startBot() {
 
       // 2B. .cartoon command (Uses free-tier Gemini Vision + Cartoon Renderer)
       if (lowerText.startsWith(".cartoon")) {
-        const quoted = msg.message?.extendedTextMessage?.contextInfo?.quotedMessage;
-        const imgMsg = msg.message?.imageMessage || quoted?.imageMessage;
+        const quoted = unwrap(innerMsg?.extendedTextMessage?.contextInfo?.quotedMessage);
+        const imgMsg = innerMsg?.imageMessage || quoted?.imageMessage;
         if (!imgMsg) {
           await sock.sendMessage(remoteJid, { text: "⚠️ Reply to any photo with *.cartoon* (or send a photo with *.cartoon* as caption)!" }, { quoted: msg });
           continue;
@@ -370,8 +379,8 @@ async function startBot() {
 
       // 2C. .ai with an attached or replied-to photo (describe/analyze image)
       if (lowerText.startsWith(".ai")) {
-        const quoted = msg.message?.extendedTextMessage?.contextInfo?.quotedMessage;
-        const imgMsg = msg.message?.imageMessage || quoted?.imageMessage;
+        const quoted = unwrap(innerMsg?.extendedTextMessage?.contextInfo?.quotedMessage);
+        const imgMsg = innerMsg?.imageMessage || quoted?.imageMessage;
         if (imgMsg) {
           const questionText = cleanText.slice(3).trim() || "Describe this photo in detail.";
           try {
