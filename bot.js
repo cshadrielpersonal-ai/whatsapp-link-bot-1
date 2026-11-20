@@ -352,8 +352,8 @@ async function startBot() {
           const mimeType = imgMsg.mimetype || "image/jpeg";
           const apiKey = process.env.GEMINI_API_KEY;
 
-          // Step 1: Analyze photo details using free-tier gemini-2.5-flash
-          const visionRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`, {
+          // Step 1: Analyze photo details using free-tier gemini-3.8-flash
+          const visionRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent?key=${apiKey}`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
@@ -400,7 +400,7 @@ async function startBot() {
             }
             const mimeType = imgMsg.mimetype || "image/jpeg";
             const apiKey = process.env.GEMINI_API_KEY;
-            const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`, {
+            const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent?key=${apiKey}`, {
               method: "POST",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({
