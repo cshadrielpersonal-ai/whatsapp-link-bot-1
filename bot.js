@@ -68,31 +68,87 @@ async function downloadYouTubeVideo(youtubeUrl) {
   if (!idMatch) throw new Error("Invalid YouTube link.");
   const videoId = idMatch[1];
 
-  const pipedInstances = [
-    "https://pipedapi.kavin.rocks",
-    "https://pipedapi.tokhmi.xyz",
-    "https://pipedapi.moomoo.me",
-    "https://api.piped.projectsegfau.lt"
-  ];
+  const headers = {
+          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+          "Accept": "application/json"
+        };
 
-  let streamUrl = null;
-  for (const base of pipedInstances) {
-    try {
-      const res = await fetch(`${base}/streams/${videoId}`, { signal: AbortSignal.timeout(8000) });
-      if (!res.ok) continue;
-      const data = await res.json();
-      const mp4 = (data.videoStreams || []).find(s => !s.videoOnly && s.format === "MPEG_4")
-               || (data.videoStreams || []).find(s => !s.videoOnly);
-      if (mp4 && mp4.url) {
-        streamUrl = mp4.url;
-        break;
-      }
-    } catch (_) {}
-  }
+        let streamUrl = null;
+        let title = "YouTube Short";
 
-  if (!streamUrl) {
-    throw new Error("All video mirrors are busy right now. Try again in a moment.");
-  }
+        // 1. Try Cobalt API instances (handles YouTube Shorts reliably)
+        const cobaltInstances = [
+          "https://api.cobalt.tools",
+          "https://cobalt-api.kwiatekmiki.com",
+          "https://cobalt.canine.tools"
+        ];
+        for (const base of cobaltInstances) {
+          try {
+            const res = await fetch(`${base}/`, {
+              method: "POST",
+              headers: { ...headers, "Content-Type": "application/json" },
+              body: JSON.stringify({ url: `https://www.youtube.com/watch?v=${videoId}`, videoQuality: "480", filenameStyle: "basic" }),
+              signal: AbortSignal.timeout(8000)
+            });
+            if (!res.ok) continue;
+            const data = await res.json();
+            if (data.url) {
+              streamUrl = data.url;
+              title = data.filename?.replace(/\.mp4$/i, "") || title;
+              break;
+            }
+          } catch (_) {}
+        }
+
+        // 2. Fallback to Invidious API instances
+        if (!streamUrl) {
+          const invidiousInstances = [
+            "https://inv.nadeko.net",
+            "https://invidious.nerdvpn.de",
+            "https://invidious.jing.rocks",
+            "https://yt.artemislena.eu"
+          ];
+          for (const base of invidiousInstances) {
+            try {
+              const res = await fetch(`${base}/api/v1/videos/${videoId}`, { headers, signal: AbortSignal.timeout(8000) });
+              if (!res.ok) continue;
+              const data = await res.json();
+              title = data.title || title;
+              const fmt = (data.formatStreams || []).find(s => s.container === "mp4") || (data.formatStreams || [])[0];
+              if (fmt && fmt.url) {
+                streamUrl = fmt.url;
+                break;
+              }
+            } catch (_) {}
+          }
+        }
+
+        // 3. Fallback to Piped API instances
+        if (!streamUrl) {
+          const pipedInstances = [
+            "https://pipedapi.adminforge.de",
+            "https://pipedapi.r4fo.com",
+            "https://api.piped.private.coffee"
+          ];
+          for (const base of pipedInstances) {
+            try {
+              const res = await fetch(`${base}/streams/${videoId}`, { headers, signal: AbortSignal.timeout(8000) });
+              if (!res.ok) continue;
+              const data = await res.json();
+              title = data.title || title;
+              const mp4 = (data.videoStreams || []).find(s => !s.videoOnly && s.format === "MPEG_4")
+                       || (data.videoStreams || []).find(s => !s.videoOnly);
+              if (mp4 && mp4.url) {
+                streamUrl = mp4.url;
+                break;
+              }
+            } catch (_) {}
+          }
+        }
+
+        if (!streamUrl) {
+          throw new Error("All video mirrors are busy right now. Try again in a moment.");
+        }
 
   const vidRes = await fetch(streamUrl, { signal: AbortSignal.timeout(25000) });
   if (!vidRes.ok) throw new Error(`Stream download failed (${vidRes.status})`);
