@@ -301,50 +301,37 @@ async function startBot() {
         const outFile = `/tmp/yt_${Date.now()}.mp4`;
 
         try {
-          const rawUrl = (text.match(/https?:\/\/[^\s]+/) || [""])[0];
-        const idMatch = rawUrl.match(/(?:shorts\/|v=|youtu\.be\/)([a-zA-Z0-9_-]{11})/);
-        if (!idMatch) throw new Error("Invalid YouTube link.");
-        const videoId = idMatch[1];
+          const ytUrl = (text.match(/https?:\/\/[^\s]+/) || [""])[0];
+          const args = [
+            "--no-playlist",
+            "--no-warnings",
+            "--max-filesize", "40M",
+            "-f", "18/b[ext=mp4][height<=480]/b[ext=mp4]",
+            "-o", outFile
+          ];
+          if (fs.existsSync("./cookies.txt")) {
+            args.push("--cookies", "./cookies.txt");
+          }
+          args.push(ytUrl);
 
-        const pipedInstances = [
-          "https://pipedapi.kavin.rocks",
-          "https://pipedapi.tokhmi.xyz",
-          "https://pipedapi.moomoo.me",
-          "https://api.piped.projectsegfau.lt"
-        ];
+          await new Promise((resolve, reject) => {
+            execFile("yt-dlp", args, { timeout: 45000, maxBuffer: 1024 * 1024 }, (err, stdout, stderr) => {
+              if (err) {
+                err.stderr = stderr;
+                reject(err);
+              } else {
+                resolve(stdout);
+              }
+            });
+          });
 
-        let streamUrl = null;
-        let title = "YouTube Short";
-
-        for (const base of pipedInstances) {
-          try {
-            const res = await fetch(`${base}/streams/${videoId}`, { signal: AbortSignal.timeout(8000) });
-            if (!res.ok) continue;
-            const data = await res.json();
-            title = data.title || title;
-            const mp4 = (data.videoStreams || []).find(s => !s.videoOnly && s.format === "MPEG_4")
-                     || (data.videoStreams || []).find(s => !s.videoOnly);
-            if (mp4 && mp4.url) {
-              streamUrl = mp4.url;
-              break;
-            }
-          } catch (_) {}
-        }
-
-        if (!streamUrl) {
-          throw new Error("All video mirrors are busy right now. Try again in a moment.");
-        }
-
-        const vidRes = await fetch(streamUrl, { signal: AbortSignal.timeout(25000) });
-        if (!vidRes.ok) throw new Error(`Stream download failed (${vidRes.status})`);
-        const videoBuffer = Buffer.from(await vidRes.arrayBuffer());
-
-        await sock.sendMessage(
-          remoteJid,
-          { video: videoBuffer, mimetype: "video/mp4", caption: `🎬 ${title}` },
-          { quoted: msg }
-        );
-      } catch (err) {
+          await sock.sendMessage(
+            remoteJid,
+            { video: fs.readFileSync(outFile), mimetype: "video/mp4", caption: "🎬 Downloaded via Shiroine" },
+            { quoted: msg }
+          );
+          if (fs.existsSync(outFile)) fs.unlinkSync(outFile);
+        } catch (err) {
         const detail = (err.stderr || err.message || "").split("\n").filter(Boolean).slice(-2).join(" ");
         await sock.sendMessage(remoteJid, { text: `❌ Download failed: ${detail}` }, { quoted: msg });
         }
