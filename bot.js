@@ -298,45 +298,72 @@ async function startBot() {
         }
 
         await sock.sendMessage(remoteJid, { text: "⏳ Downloading video, please wait..." }, { quoted: msg });
-        const outFile = `/tmp/yt_${Date.now()}.mp4`;
-
         try {
-          const ytUrl = (text.match(/https?:\/\/[^\s]+/) || [""])[0];
-          const args = [
-            "--no-playlist",
-            "--no-warnings",
-            "--max-filesize", "40M",
-            "--js-runtimes", "node",
-            "-f", "18/b[ext=mp4][height<=480]/b[ext=mp4]",
-            "-o", outFile
-          ];
-          if (fs.existsSync("./cookies.txt")) {
-            args.push("--cookies", "./cookies.txt");
-          }
-          args.push(ytUrl);
+          const rawUrl = (text.match(/https?:\/\/[^\s]+/) || [""])[0];
+          const idMatch = rawUrl.match(/(?:shorts\/|v=|youtu\.be\/)([a-zA-Z0-9_-]{11})/);
+          if (!idMatch) throw new Error("Invalid YouTube link.");
+          const videoId = idMatch[1];
 
-          await new Promise((resolve, reject) => {
-            execFile("yt-dlp", args, { timeout: 45000, maxBuffer: 1024 * 1024 }, (err, stdout, stderr) => {
-              if (err) {
-                err.stderr = stderr;
-                reject(err);
-              } else {
-                resolve(stdout);
-              }
+          let streamUrl = null;
+          let title = "YouTube Short";
+
+          const clients = [
+            {
+              name: "ANDROID_VR",
+              id: "28",
+              ver: "1.56.21",
+              ua: "com.google.android.apps.youtube.vr.oculus/1.56.21 (Linux; U; Android 12L; eureka-user Build/SQ3A.220605.009.A1) gzip",
+              ctx: { client: { clientName: "ANDROID_VR", clientVersion: "1.56.21", androidSdkVersion: 32, osName: "Android", osVersion: "12L", hl: "en", gl: "US" } }
+            },
+            {
+              name: "IOS",
+              id: "5",
+              ver: "19.29.1",
+              ua: "com.google.ios.youtube/19.29.1 (iPhone16,2; U; CPU iOS 17_5_1 like Mac OS X;)",
+              ctx: { client: { clientName: "IOS", clientVersion: "19.29.1", deviceMake: "Apple", deviceModel: "iPhone16,2", osName: "iPhone", osVersion: "17.5.1.21F90", hl: "en", gl: "US" } }
+            }
+          ];
+
+          for (const c of clients) {
+            const res = await fetch("https://www.youtube.com/youtubei/v1/player?prettyPrint=false", {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                "User-Agent": c.ua,
+                "X-YouTube-Client-Name": c.id,
+                "X-YouTube-Client-Version": c.ver
+              },
+              body: JSON.stringify({ videoId, context: c.ctx }),
+              signal: AbortSignal.timeout(10000)
             });
+            if (!res.ok) continue;
+            const data = await res.json();
+            title = data.videoDetails?.title || title;
+            const mp4 = (data.streamingData?.formats || []).find(f => f.mimeType?.includes("video/mp4") && f.url);
+            if (mp4?.url) {
+              streamUrl = mp4.url;
+              break;
+            }
+          }
+
+          if (!streamUrl) {
+            throw new Error("YouTube blocked datacenter stream extraction (LOGIN_REQUIRED).");
+          }
+
+          const vidRes = await fetch(streamUrl, {
+            headers: { "User-Agent": clients[0].ua },
+            signal: AbortSignal.timeout(25000)
           });
+          if (!vidRes.ok) throw new Error(`Stream HTTP ${vidRes.status}`);
+          const videoBuffer = Buffer.from(await vidRes.arrayBuffer());
 
           await sock.sendMessage(
             remoteJid,
-            { video: fs.readFileSync(outFile), mimetype: "video/mp4", caption: "🎬 Downloaded via Shiroine" },
+            { video: videoBuffer, mimetype: "video/mp4", caption: `🎬 ${title}` },
             { quoted: msg }
           );
-          if (fs.existsSync(outFile)) fs.unlinkSync(outFile);
         } catch (err) {
-        const lines = (err.stderr || err.message || "").split("\n").filter(Boolean);
-        const errLine = lines.find(l => l.includes("ERROR:")) || lines.slice(-2).join(" ");
-        const detail = errLine;
-        await sock.sendMessage(remoteJid, { text: `❌ Download failed: ${detail}` }, { quoted: msg });
+          await sock.sendMessage(remoteJid, { text: `❌ Download failed: ${err.message}` }, { quoted: msg });
         }
         continue;
       }
