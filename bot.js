@@ -68,86 +68,54 @@ async function downloadYouTubeVideo(youtubeUrl) {
   if (!idMatch) throw new Error("Invalid YouTube link.");
   const videoId = idMatch[1];
 
-  const headers = {
-          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-          "Accept": "application/json"
-        };
-
-        let streamUrl = null;
+  let streamUrl = null;
         let title = "YouTube Short";
 
-        // 1. Try Cobalt API instances (handles YouTube Shorts reliably)
-        const cobaltInstances = [
-          "https://api.cobalt.tools",
-          "https://cobalt-api.kwiatekmiki.com",
-          "https://cobalt.canine.tools"
+        const clients = [
+          {
+            name: "ANDROID_VR",
+            userAgent: "com.google.android.apps.youtube.vr.oculus/1.56.21 (Linux; U; Android 12L; eureka-user Build/SQ3A.220605.009.A1) gzip",
+            context: { client: { clientName: "ANDROID_VR", clientVersion: "1.56.21", androidSdkVersion: 32, osName: "Android", osVersion: "12L", hl: "en", gl: "US" } }
+          },
+          {
+            name: "IOS",
+            userAgent: "com.google.ios.youtube/19.29.1 (iPhone16,2; U; CPU iOS 17_5_1 like Mac OS X;)",
+            context: { client: { clientName: "IOS", clientVersion: "19.29.1", deviceMake: "Apple", deviceModel: "iPhone16,2", osName: "iPhone", osVersion: "17.5.1.21F90", hl: "en", gl: "US" } }
+          }
         ];
-        for (const base of cobaltInstances) {
+
+        for (const c of clients) {
           try {
-            const res = await fetch(`${base}/`, {
+            const res = await fetch("https://www.youtube.com/youtubei/v1/player?prettyPrint=false", {
               method: "POST",
-              headers: { ...headers, "Content-Type": "application/json" },
-              body: JSON.stringify({ url: `https://www.youtube.com/watch?v=${videoId}`, videoQuality: "480", filenameStyle: "basic" }),
-              signal: AbortSignal.timeout(8000)
+              headers: {
+                "Content-Type": "application/json",
+                "User-Agent": c.userAgent,
+                "X-YouTube-Client-Name": c.name === "IOS" ? "5" : "28",
+                "X-YouTube-Client-Version": c.context.client.clientVersion
+              },
+              body: JSON.stringify({ videoId, context: c.context }),
+              signal: AbortSignal.timeout(10000)
             });
             if (!res.ok) continue;
             const data = await res.json();
-            if (data.url) {
-              streamUrl = data.url;
-              title = data.filename?.replace(/\.mp4$/i, "") || title;
+            title = data.videoDetails?.title || title;
+            const formats = [
+              ...(data.streamingData?.formats || []),
+              ...(data.streamingData?.adaptiveFormats || [])
+            ];
+            // Pick progressive MP4 with both audio & video (itag 18 = 360p mp4, itag 22 = 720p mp4)
+            const mp4 = (data.streamingData?.formats || []).find(f => f.mimeType?.includes("video/mp4") && f.url)
+                     || formats.find(f => f.mimeType?.includes("video/mp4") && f.audioQuality && f.url);
+            if (mp4?.url) {
+              streamUrl = mp4.url;
               break;
             }
           } catch (_) {}
         }
 
-        // 2. Fallback to Invidious API instances
         if (!streamUrl) {
-          const invidiousInstances = [
-            "https://inv.nadeko.net",
-            "https://invidious.nerdvpn.de",
-            "https://invidious.jing.rocks",
-            "https://yt.artemislena.eu"
-          ];
-          for (const base of invidiousInstances) {
-            try {
-              const res = await fetch(`${base}/api/v1/videos/${videoId}`, { headers, signal: AbortSignal.timeout(8000) });
-              if (!res.ok) continue;
-              const data = await res.json();
-              title = data.title || title;
-              const fmt = (data.formatStreams || []).find(s => s.container === "mp4") || (data.formatStreams || [])[0];
-              if (fmt && fmt.url) {
-                streamUrl = fmt.url;
-                break;
-              }
-            } catch (_) {}
-          }
-        }
-
-        // 3. Fallback to Piped API instances
-        if (!streamUrl) {
-          const pipedInstances = [
-            "https://pipedapi.adminforge.de",
-            "https://pipedapi.r4fo.com",
-            "https://api.piped.private.coffee"
-          ];
-          for (const base of pipedInstances) {
-            try {
-              const res = await fetch(`${base}/streams/${videoId}`, { headers, signal: AbortSignal.timeout(8000) });
-              if (!res.ok) continue;
-              const data = await res.json();
-              title = data.title || title;
-              const mp4 = (data.videoStreams || []).find(s => !s.videoOnly && s.format === "MPEG_4")
-                       || (data.videoStreams || []).find(s => !s.videoOnly);
-              if (mp4 && mp4.url) {
-                streamUrl = mp4.url;
-                break;
-              }
-            } catch (_) {}
-          }
-        }
-
-        if (!streamUrl) {
-          throw new Error("All video mirrors are busy right now. Try again in a moment.");
+          throw new Error("Could not extract video stream. Try another link.");
         }
 
   const vidRes = await fetch(streamUrl, { signal: AbortSignal.timeout(25000) });
