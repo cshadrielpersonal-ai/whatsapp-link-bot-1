@@ -263,7 +263,44 @@ async function startBot() {
 
   sock.ev.on("creds.update", saveCreds);
 
-  sock.ev.on("messages.upsert", async ({ messages, type }) => {
+  async function callGeminiVision(apiKey, mimeType, base64Data, promptText) {
+  const models = ["gemini-3.8-flash", "gemini-3.8-flash-lite", "gemini-3.0-flash"];
+  let lastErr = "Gemini vision request failed.";
+  for (const model of models) {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            contents: [{
+              parts: [
+                { inlineData: { mimeType, data: base64Data } },
+                { text: promptText }
+              ]
+            }]
+          })
+        });
+        const data = await res.json();
+        if (res.ok) {
+          const out = data.candidates?.[0]?.content?.parts?.map(p => p.text || "").join("").trim();
+          if (out) return out;
+        }
+        lastErr = data.error?.message || `HTTP ${res.status}`;
+        if (res.status === 503 || res.status === 429 || lastErr.toLowerCase().includes("high demand")) {
+          await new Promise(r => setTimeout(r, 2000));
+          continue;
+        }
+        break;
+      } catch (e) {
+        lastErr = e.message;
+      }
+    }
+  }
+  throw new Error(lastErr);
+}
+
+sock.ev.on("messages.upsert", async ({ messages, type }) => {
     if (type !== "notify") return;
 
     for (const msg of messages) {
@@ -352,23 +389,13 @@ async function startBot() {
           const mimeType = imgMsg.mimetype || "image/jpeg";
           const apiKey = process.env.GEMINI_API_KEY;
 
-          // Step 1: Analyze photo details using free-tier gemini-3.8-flash
-          const visionRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent?key=${apiKey}`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              contents: [{
-                parts: [
-                  { inlineData: { mimeType, data: buffer.toString("base64") } },
-                  { text: "Write a concise 40-word visual image prompt describing the exact subject, face/hair/clothing, pose, colors, and background in this photo so an artist can draw it in vibrant 2D cartoon anime style. Output ONLY the prompt." }
-                ]
-              }]
-            })
-          });
-          const visionData = await visionRes.json();
-          if (!visionRes.ok) throw new Error(visionData.error?.message || "Vision analysis failed");
-          const sceneDesc = visionData.candidates?.[0]?.content?.parts?.map(p => p.text || "").join("").trim();
-          if (!sceneDesc) throw new Error("Could not read photo details.");
+          // Step 1: Analyze photo details with automatic retry & model fallback
+          const sceneDesc = await callGeminiVision(
+            apiKey,
+            mimeType,
+            buffer.toString("base64"),
+            "Write a concise 40-word visual image prompt describing the exact subject, face/hair/clothing, pose, colors, and background in this photo so an artist can draw it in vibrant 2D cartoon anime style. Output ONLY the prompt."
+          );
 
           // Step 2: Render the cartoon illustration
           const cartoonPrompt = `vibrant colorful 2D cartoon anime illustration, clean bold outlines, studio anime shading, ${sceneDesc}`;
@@ -400,21 +427,7 @@ async function startBot() {
             }
             const mimeType = imgMsg.mimetype || "image/jpeg";
             const apiKey = process.env.GEMINI_API_KEY;
-            const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent?key=${apiKey}`, {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
-                contents: [{
-                  parts: [
-                    { inlineData: { mimeType, data: buffer.toString("base64") } },
-                    { text: questionText }
-                  ]
-                }]
-              })
-            });
-            const data = await res.json();
-            if (!res.ok) throw new Error(data.error?.message || "Image analysis failed");
-            const reply = data.candidates?.[0]?.content?.parts?.map(p => p.text || "").join("").trim() || "Could not describe this image.";
+            const reply = await callGeminiVision(apiKey, mimeType, buffer.toString("base64"), questionText);
             await sock.sendMessage(remoteJid, { text: reply }, { quoted: msg });
           } catch (err) {
             await sock.sendMessage(remoteJid, { text: `❌ Image analysis failed: ${err.message}` }, { quoted: msg });
