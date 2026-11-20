@@ -313,11 +313,19 @@ async function startBot() {
         }
         await sock.sendMessage(remoteJid, { text: "🎨 Creating your image, please wait..." }, { quoted: msg });
         try {
-          const seed = Math.floor(Math.random() * 1000000);
-          const imgUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}?width=1024&height=1024&seed=${seed}&nologo=true`;
-          const res = await fetch(imgUrl, { signal: AbortSignal.timeout(30000) });
-          if (!res.ok) throw new Error(`Image server returned HTTP ${res.status}`);
-          const imgBuffer = Buffer.from(await res.arrayBuffer());
+          let imgBuffer = null;
+          for (const model of ["flux", "turbo"]) {
+            try {
+              const seed = Math.floor(Math.random() * 1000000);
+              const imgUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}?width=1024&height=1024&seed=${seed}&model=${model}&nologo=true`;
+              const res = await fetch(imgUrl, { signal: AbortSignal.timeout(25000) });
+              if (res.ok) {
+                imgBuffer = Buffer.from(await res.arrayBuffer());
+                break;
+              }
+            } catch (_) {}
+          }
+          if (!imgBuffer) throw new Error("Image generator is busy. Try again in a few seconds.");
           await sock.sendMessage(remoteJid, { image: imgBuffer, caption: `🎨 *${prompt}*` }, { quoted: msg });
         } catch (err) {
           await sock.sendMessage(remoteJid, { text: `❌ Drawing failed: ${err.message}` }, { quoted: msg });
