@@ -383,18 +383,35 @@ sock.ev.on("messages.upsert", async ({ messages, type }) => {
       // Helper: Upload WhatsApp image buffer to temporary host for direct image-to-image editing
       const uploadTempImage = async (buffer, mimeType) => {
         const ext = mimeType.includes("png") ? "png" : "jpg";
-        const form = new FormData();
-        form.append("file", new Blob([buffer], { type: mimeType }), `photo.${ext}`);
+        // Primary: litterbox.catbox.moe (returns direct raw image CDN URL, no hotlink block)
+        try {
+          const form = new FormData();
+          form.append("reqtype", "fileupload");
+          form.append("time", "1h");
+          form.append("fileToUpload", new Blob([buffer], { type: mimeType }), `photo.${ext}`);
+          const res = await fetch("https://litterbox.catbox.moe/resources/internals/api.php", {
+            method: "POST",
+            body: form,
+            signal: AbortSignal.timeout(15000)
+          });
+          if (res.ok) {
+            const directUrl = (await res.text()).trim();
+            if (directUrl.startsWith("https://")) return directUrl;
+          }
+        } catch (_) {}
+
+        // Fallback: tmpfiles.org
+        const form2 = new FormData();
+        form2.append("file", new Blob([buffer], { type: mimeType }), `photo.${ext}`);
         const upRes = await fetch("https://tmpfiles.org/api/v1/upload", {
           method: "POST",
-          body: form,
+          body: form2,
           signal: AbortSignal.timeout(15000)
         });
         if (!upRes.ok) throw new Error(`Temp upload failed (${upRes.status})`);
         const upJson = await upRes.json();
         const pageUrl = upJson?.data?.url;
         if (!pageUrl) throw new Error("No URL returned from temp upload");
-        // Convert https://tmpfiles.org/12345/photo.jpg -> https://tmpfiles.org/dl/12345/photo.jpg
         return pageUrl.replace("tmpfiles.org/", "tmpfiles.org/dl/");
       };
 
@@ -429,7 +446,7 @@ sock.ev.on("messages.upsert", async ({ messages, type }) => {
             const mimeType = imgMsg.mimetype || "image/jpeg";
             const publicImgUrl = await uploadTempImage(buffer, mimeType);
 
-            for (const model of ["kontext", "flux"]) {
+            for (const model of ["kontext", "gptimage"]) {
               try {
                 const seed = Math.floor(Math.random() * 1000000);
                 const preservePrompt = `Keep the exact same person, face, clothing, and pose from this photo completely unchanged, and only apply this edit: ${prompt}`;
@@ -497,7 +514,7 @@ sock.ev.on("messages.upsert", async ({ messages, type }) => {
 
           const cartoonPrompt = "Transform this exact photo into a vibrant colorful 2D cartoon anime illustration with clean outlines and expressive shading, keeping the exact same person, face, pose, and background";
           let imgBuffer = null;
-          for (const model of ["kontext", "flux"]) {
+          for (const model of ["kontext", "gptimage"]) {
             try {
               const seed = Math.floor(Math.random() * 1000000);
               const imgUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(cartoonPrompt)}?model=${model}&image=${encodeURIComponent(publicImgUrl)}&width=1024&height=1024&seed=${seed}&nologo=true`;
