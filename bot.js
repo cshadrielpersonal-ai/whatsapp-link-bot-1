@@ -264,32 +264,15 @@ async function startBot() {
   sock.ev.on("creds.update", saveCreds);
 
   async function callGeminiVision(apiKey, mimeType, base64Data, promptText) {
-  let models = ["gemini-3.8-flash", "gemini-3.8-flash-lite"];
-  try {
-    const listRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${apiKey}`, {
-      signal: AbortSignal.timeout(5000)
-    });
-    if (listRes.ok) {
-      const listData = await listRes.json();
-      const valid = (listData.models || [])
-        .filter(m =>
-          m.supportedGenerationMethods?.includes("generateContent") &&
-          /gemini-(3\.8|2\.5)-flash/i.test(m.name) &&
-          !/image|tts|audio|live|thinking/i.test(m.name)
-        )
-        .map(m => m.name.replace("models/", ""));
-      if (valid.length) models = [...new Set([...models, ...valid])].slice(0, 3);
-    }
-  } catch (_) {}
-
+  const models = ["gemini-3.8-flash", "gemini-3.8-flash-lite"];
   let lastErr = "Gemini vision request failed.";
   for (const model of models) {
-    for (let attempt = 0; attempt < 2; attempt++) {
+    for (let attempt = 0; attempt < 3; attempt++) {
       try {
         const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          signal: AbortSignal.timeout(10000),
+          signal: AbortSignal.timeout(12000),
           body: JSON.stringify({
             contents: [{
               parts: [
@@ -305,10 +288,9 @@ async function startBot() {
           if (out) return out;
         }
         const msg = data.error?.message || `HTTP ${res.status}`;
-        if (res.status === 404) break;
         lastErr = msg;
         if (res.status === 503 || res.status === 429 || msg.toLowerCase().includes("high demand")) {
-          await new Promise(r => setTimeout(r, 1500));
+          await new Promise(r => setTimeout(r, 2000 * (attempt + 1)));
           continue;
         }
         break;
@@ -321,7 +303,7 @@ async function startBot() {
 }
 
 async function callGeminiVision(apiKey, mimeType, base64Data, promptText) {
-  const models = ["gemini-3.8-flash", "gemini-3.8-flash-lite", "gemini-3.0-flash"];
+  const models = ["gemini-3.8-flash", "gemini-3.8-flash-lite", "gemini-3.8-flash"];
   let lastErr = "Gemini vision request failed.";
   for (const model of models) {
     for (let attempt = 0; attempt < 2; attempt++) {
