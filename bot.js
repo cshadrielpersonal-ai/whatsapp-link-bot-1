@@ -263,7 +263,72 @@ async function startBot() {
 
   sock.ev.on("creds.update", saveCreds);
 
-  async function callGeminiVision(apiKey, mimeType, base64Data, promptText) {
+  async function editImageWithGemini(apiKey, mimeType, base64Data, editInstruction) {
+  let models = ["gemini-2.5-flash-image", "gemini-2.0-flash-exp-image-generation"];
+  try {
+    const listRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${apiKey}`, {
+      signal: AbortSignal.timeout(6000)
+    });
+    if (listRes.ok) {
+      const listData = await listRes.json();
+      const imgModels = (listData.models || [])
+        .filter(m =>
+          m.supportedGenerationMethods?.includes("generateContent") &&
+          /image/i.test(m.name) &&
+          !/imagen/i.test(m.name)
+        )
+        .map(m => m.name.replace("models/", ""));
+      if (imgModels.length) models = [...new Set([...imgModels, ...models])];
+    }
+  } catch (_) {}
+
+  let lastErr = "Gemini image edit failed.";
+  for (const model of models) {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          signal: AbortSignal.timeout(25000),
+          body: JSON.stringify({
+            contents: [{
+              parts: [
+                { inlineData: { mimeType, data: base64Data } },
+                { text: editInstruction }
+              ]
+            }],
+            generationConfig: {
+              responseModalities: ["TEXT", "IMAGE"]
+            }
+          })
+        });
+        const data = await res.json();
+        if (res.ok) {
+          const parts = data.candidates?.[0]?.content?.parts || [];
+          const imgPart = parts.find(p => p.inlineData?.data);
+          if (imgPart?.inlineData?.data) {
+            return Buffer.from(imgPart.inlineData.data, "base64");
+          }
+          const txtPart = parts.find(p => p.text)?.text;
+          if (txtPart) lastErr = txtPart.slice(0, 120);
+        } else {
+          lastErr = data.error?.message || `HTTP ${res.status}`;
+          if (res.status === 404) break;
+          if (res.status === 503 || res.status === 429) {
+            await new Promise(r => setTimeout(r, 2000));
+            continue;
+          }
+        }
+        break;
+      } catch (e) {
+        lastErr = e.message;
+      }
+    }
+  }
+  throw new Error(lastErr);
+}
+
+async function callGeminiVision(apiKey, mimeType, base64Data, promptText) {
   const models = ["gemini-3.8-flash", "gemini-3.8-flash-lite"];
   let lastErr = "Gemini vision request failed.";
   for (const model of models) {
@@ -431,7 +496,6 @@ sock.ev.on("messages.upsert", async ({ messages, type }) => {
           let imgBuffer = null;
 
           if (imgMsg) {
-            // Direct Image-to-Image editing (preserves the actual subject/face from your photo!)
             const { downloadContentFromMessage } = await import("@whiskeysockets/baileys");
             const stream = await downloadContentFromMessage(imgMsg, "image");
             const chunks = [];
@@ -444,23 +508,14 @@ sock.ev.on("messages.upsert", async ({ messages, type }) => {
             const buffer = Buffer.concat(chunks);
             if (!buffer.length) throw new Error("Downloaded image was empty. Try resending the photo.");
             const mimeType = imgMsg.mimetype || "image/jpeg";
-            const publicImgUrl = await uploadTempImage(buffer, mimeType);
+            const apiKey = process.env.GEMINI_API_KEY;
 
-            for (const model of ["kontext", "gptimage"]) {
-              try {
-                const seed = Math.floor(Math.random() * 1000000);
-                const preservePrompt = `Keep the exact same person, face, clothing, and pose from this photo completely unchanged, and only apply this edit: ${prompt}`;
-                const editUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(preservePrompt)}?model=${model}&image=${encodeURIComponent(publicImgUrl)}&width=1024&height=1024&seed=${seed}&nologo=true`;
-                const res = await fetch(editUrl, { signal: AbortSignal.timeout(30000) });
-                if (res.ok) {
-                  const candidate = Buffer.from(await res.arrayBuffer());
-                  if (candidate.length > 2000) {
-                    imgBuffer = candidate;
-                    break;
-                  }
-                }
-              } catch (_) {}
-            }
+            imgBuffer = await editImageWithGemini(
+              apiKey,
+              mimeType,
+              buffer.toString("base64"),
+              `Edit this exact photo: ${prompt}. Keep the exact same person, face, identity, and pose from the input photo completely unchanged.`
+            );
           } else {
             // Standard Text-to-Image generation
             for (const model of ["flux", "turbo"]) {
@@ -487,7 +542,7 @@ sock.ev.on("messages.upsert", async ({ messages, type }) => {
         continue;
       }
 
-      // 2B. .cartoon command (Direct Image-to-Image cartoon transformation)
+      // 2B. .cartoon command (True pixel-level Gemini image-to-image cartoon edit)
       if (lowerText.startsWith(".cartoon")) {
         const rawContext = innerMsg?.extendedTextMessage?.contextInfo || msg.message?.extendedTextMessage?.contextInfo || msg.message?.ephemeralMessage?.message?.extendedTextMessage?.contextInfo;
         const quoted = unwrap(rawContext?.quotedMessage);
@@ -510,25 +565,14 @@ sock.ev.on("messages.upsert", async ({ messages, type }) => {
           const buffer = Buffer.concat(chunks);
           if (!buffer.length) throw new Error("Downloaded image was empty.");
           const mimeType = imgMsg.mimetype || "image/jpeg";
-          const publicImgUrl = await uploadTempImage(buffer, mimeType);
+          const apiKey = process.env.GEMINI_API_KEY;
 
-          const cartoonPrompt = "Transform this exact photo into a vibrant colorful 2D cartoon anime illustration with clean outlines and expressive shading, keeping the exact same person, face, pose, and background";
-          let imgBuffer = null;
-          for (const model of ["kontext", "gptimage"]) {
-            try {
-              const seed = Math.floor(Math.random() * 1000000);
-              const imgUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(cartoonPrompt)}?model=${model}&image=${encodeURIComponent(publicImgUrl)}&width=1024&height=1024&seed=${seed}&nologo=true`;
-              const imgRes = await fetch(imgUrl, { signal: AbortSignal.timeout(30000) });
-              if (imgRes.ok) {
-                const candidate = Buffer.from(await imgRes.arrayBuffer());
-                if (candidate.length > 2000) {
-                  imgBuffer = candidate;
-                  break;
-                }
-              }
-            } catch (_) {}
-          }
-          if (!imgBuffer) throw new Error("Cartoon renderer is busy. Please try again in 10 seconds.");
+          const imgBuffer = await editImageWithGemini(
+            apiKey,
+            mimeType,
+            buffer.toString("base64"),
+            "Transform this exact photo into a vibrant colorful 2D cartoon anime illustration with clean outlines and expressive shading, keeping the exact same person, face, clothing, pose, and background."
+          );
 
           await sock.sendMessage(remoteJid, { image: imgBuffer, caption: "✨ *Cartoon Style Applied!*" }, { quoted: msg });
         } catch (err) {
