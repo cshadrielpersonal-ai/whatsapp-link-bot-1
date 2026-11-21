@@ -410,12 +410,17 @@ sock.ev.on("messages.upsert", async ({ messages, type }) => {
             const mimeType = imgMsg.mimetype || "image/jpeg";
             const apiKey = process.env.GEMINI_API_KEY;
 
-            finalPrompt = await callGeminiVision(
-              apiKey,
-              mimeType,
-              buffer.toString("base64"),
-              `Look at this photo and apply this edit instruction: "${prompt}". Write a single concise 45-word image generation prompt describing the exact same person/subject, appearance, clothing, and pose from the photo, but with the requested edit applied. Output ONLY the final image prompt.`
-            );
+            try {
+              finalPrompt = await callGeminiVision(
+                apiKey,
+                mimeType,
+                buffer.toString("base64"),
+                `Look at this photo and apply this edit instruction: "${prompt}". Write a single concise 45-word image generation prompt describing the exact same person/subject, appearance, clothing, and pose from the photo, but with the requested edit applied. Output ONLY the final image prompt.`
+              );
+            } catch (visionErr) {
+              console.log("[DRAW] Vision busy, falling back to direct prompt:", visionErr.message);
+              finalPrompt = `high quality detailed scene, ${prompt}`;
+            }
           }
 
           let imgBuffer = null;
