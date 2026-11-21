@@ -264,23 +264,12 @@ async function startBot() {
   sock.ev.on("creds.update", saveCreds);
 
   async function editImageWithGemini(apiKey, mimeType, base64Data, editInstruction) {
-  let models = ["gemini-2.5-flash-image", "gemini-2.0-flash-exp-image-generation"];
-  try {
-    const listRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${apiKey}`, {
-      signal: AbortSignal.timeout(6000)
-    });
-    if (listRes.ok) {
-      const listData = await listRes.json();
-      const imgModels = (listData.models || [])
-        .filter(m =>
-          m.supportedGenerationMethods?.includes("generateContent") &&
-          /image/i.test(m.name) &&
-          !/imagen/i.test(m.name)
-        )
-        .map(m => m.name.replace("models/", ""));
-      if (imgModels.length) models = [...new Set([...imgModels, ...models])];
-    }
-  } catch (_) {}
+  const models = [
+    "gemini-3.1-flash-lite-image",
+    "gemini-3.1-flash-image",
+    "gemini-nano-banana-2.1",
+    "gemini-2.5-flash-image"
+  ];
 
   let lastErr = "Gemini image edit failed.";
   for (const model of models) {
@@ -313,8 +302,8 @@ async function startBot() {
           if (txtPart) lastErr = txtPart.slice(0, 120);
         } else {
           lastErr = data.error?.message || `HTTP ${res.status}`;
-          if (res.status === 404) break;
-          if (res.status === 503 || res.status === 429) {
+          if (res.status === 404 || res.status === 429) break;
+          if (res.status === 503) {
             await new Promise(r => setTimeout(r, 2000));
             continue;
           }
