@@ -300,6 +300,43 @@ async function startBot() {
   throw new Error(lastErr);
 }
 
+async function callGeminiVision(apiKey, mimeType, base64Data, promptText) {
+  const models = ["gemini-3.8-flash", "gemini-3.8-flash-lite", "gemini-3.0-flash"];
+  let lastErr = "Gemini vision request failed.";
+  for (const model of models) {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            contents: [{
+              parts: [
+                { inlineData: { mimeType, data: base64Data } },
+                { text: promptText }
+              ]
+            }]
+          })
+        });
+        const data = await res.json();
+        if (res.ok) {
+          const out = data.candidates?.[0]?.content?.parts?.map(p => p.text || "").join("").trim();
+          if (out) return out;
+        }
+        lastErr = data.error?.message || `HTTP ${res.status}`;
+        if (res.status === 503 || res.status === 429 || lastErr.toLowerCase().includes("high demand")) {
+          await new Promise(r => setTimeout(r, 2000));
+          continue;
+        }
+        break;
+      } catch (e) {
+        lastErr = e.message;
+      }
+    }
+  }
+  throw new Error(lastErr);
+}
+
 sock.ev.on("messages.upsert", async ({ messages, type }) => {
     if (type !== "notify") return;
 
