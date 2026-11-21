@@ -264,10 +264,27 @@ async function startBot() {
   sock.ev.on("creds.update", saveCreds);
 
   async function callGeminiVision(apiKey, mimeType, base64Data, promptText) {
-  const models = ["gemini-3.8-flash", "gemini-3.8-flash-lite", "gemini-3.0-flash"];
+  let models = ["gemini-3.8-flash", "gemini-3.8-flash-lite"];
+  try {
+    const listRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${apiKey}`, {
+      signal: AbortSignal.timeout(8000)
+    });
+    if (listRes.ok) {
+      const listData = await listRes.json();
+      const valid = (listData.models || [])
+        .filter(m =>
+          m.supportedGenerationMethods?.includes("generateContent") &&
+          /gemini-(3\.8|2\.5)-flash/i.test(m.name) &&
+          !/image|tts|audio|live|thinking/i.test(m.name)
+        )
+        .map(m => m.name.replace("models/", ""));
+      if (valid.length) models = [...new Set([...models, ...valid])];
+    }
+  } catch (_) {}
+
   let lastErr = "Gemini vision request failed.";
   for (const model of models) {
-    for (let attempt = 0; attempt < 2; attempt++) {
+    for (let attempt = 0; attempt < 3; attempt++) {
       try {
         const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`, {
           method: "POST",
@@ -286,9 +303,11 @@ async function startBot() {
           const out = data.candidates?.[0]?.content?.parts?.map(p => p.text || "").join("").trim();
           if (out) return out;
         }
-        lastErr = data.error?.message || `HTTP ${res.status}`;
-        if (res.status === 503 || res.status === 429 || lastErr.toLowerCase().includes("high demand")) {
-          await new Promise(r => setTimeout(r, 2000));
+        const msg = data.error?.message || `HTTP ${res.status}`;
+        if (res.status === 404) break;
+        lastErr = msg;
+        if (res.status === 503 || res.status === 429 || msg.toLowerCase().includes("high demand")) {
+          await new Promise(r => setTimeout(r, 2500 * (attempt + 1)));
           continue;
         }
         break;
