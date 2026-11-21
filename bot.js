@@ -407,7 +407,7 @@ sock.ev.on("messages.upsert", async ({ messages, type }) => {
         continue;
       }
 
-      // 2B. .cartoon command (Uses free-tier Gemini Vision + Cartoon Renderer)
+      // 2B. .cartoon command (With download timeout & flux/turbo renderer fallback)
       if (lowerText.startsWith(".cartoon")) {
         const quoted = unwrap(innerMsg?.extendedTextMessage?.contextInfo?.quotedMessage);
         const imgMsg = innerMsg?.imageMessage || quoted?.imageMessage;
@@ -417,33 +417,54 @@ sock.ev.on("messages.upsert", async ({ messages, type }) => {
         }
         await sock.sendMessage(remoteJid, { text: "✨ Turning photo into cartoon style, please wait..." }, { quoted: msg });
         try {
+          console.log("[CARTOON] Downloading image from WhatsApp...");
           const { downloadContentFromMessage } = await import("@whiskeysockets/baileys");
           const stream = await downloadContentFromMessage(imgMsg, "image");
-          let buffer = Buffer.alloc(0);
-          for await (const chunk of stream) {
-            buffer = Buffer.concat([buffer, chunk]);
-          }
+          const chunks = [];
+          await Promise.race([
+            (async () => {
+              for await (const chunk of stream) chunks.push(chunk);
+            })(),
+            new Promise((_, rej) => setTimeout(() => rej(new Error("WhatsApp image download timed out. Try resending the photo.")), 15000))
+          ]);
+          const buffer = Buffer.concat(chunks);
+          if (!buffer.length) throw new Error("Downloaded image was empty.");
+
           const mimeType = imgMsg.mimetype || "image/jpeg";
           const apiKey = process.env.GEMINI_API_KEY;
 
-          // Step 1: Analyze photo details with automatic retry & model fallback
+          console.log("[CARTOON] Analyzing image with Gemini...");
           const sceneDesc = await callGeminiVision(
             apiKey,
             mimeType,
             buffer.toString("base64"),
             "Write a concise 40-word visual image prompt describing the exact subject, face/hair/clothing, pose, colors, and background in this photo so an artist can draw it in vibrant 2D cartoon anime style. Output ONLY the prompt."
           );
+          console.log("[CARTOON] Prompt:", sceneDesc);
 
-          // Step 2: Render the cartoon illustration
           const cartoonPrompt = `vibrant colorful 2D cartoon anime illustration, clean bold outlines, studio anime shading, ${sceneDesc}`;
-          const seed = Math.floor(Math.random() * 1000000);
-          const imgUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(cartoonPrompt)}?width=1024&height=1024&seed=${seed}&nologo=true`;
-          const imgRes = await fetch(imgUrl, { signal: AbortSignal.timeout(30000) });
-          if (!imgRes.ok) throw new Error(`Cartoon renderer returned HTTP ${imgRes.status}`);
-          const imgBuffer = Buffer.from(await imgRes.arrayBuffer());
+          let imgBuffer = null;
+          for (const model of ["flux", "turbo"]) {
+            try {
+              const seed = Math.floor(Math.random() * 1000000);
+              const imgUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(cartoonPrompt)}?width=1024&height=1024&seed=${seed}&model=${model}&nologo=true`;
+              const imgRes = await fetch(imgUrl, { signal: AbortSignal.timeout(25000) });
+              if (imgRes.ok) {
+                const candidate = Buffer.from(await imgRes.arrayBuffer());
+                if (candidate.length > 2000) {
+                  imgBuffer = candidate;
+                  break;
+                }
+              }
+            } catch (e) {
+              console.log(`[CARTOON] Model ${model} failed:`, e.message);
+            }
+          }
+          if (!imgBuffer) throw new Error("Cartoon image renderer timed out. Please try again.");
 
           await sock.sendMessage(remoteJid, { image: imgBuffer, caption: "✨ *Cartoon Style Applied!*" }, { quoted: msg });
         } catch (err) {
+          console.error("[CARTOON] Error:", err.message);
           await sock.sendMessage(remoteJid, { text: `❌ Cartoon edit failed: ${err.message}` }, { quoted: msg });
         }
         continue;
