@@ -267,7 +267,7 @@ async function startBot() {
   let models = ["gemini-3.8-flash", "gemini-3.8-flash-lite"];
   try {
     const listRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${apiKey}`, {
-      signal: AbortSignal.timeout(8000)
+      signal: AbortSignal.timeout(5000)
     });
     if (listRes.ok) {
       const listData = await listRes.json();
@@ -278,17 +278,18 @@ async function startBot() {
           !/image|tts|audio|live|thinking/i.test(m.name)
         )
         .map(m => m.name.replace("models/", ""));
-      if (valid.length) models = [...new Set([...models, ...valid])];
+      if (valid.length) models = [...new Set([...models, ...valid])].slice(0, 3);
     }
   } catch (_) {}
 
   let lastErr = "Gemini vision request failed.";
   for (const model of models) {
-    for (let attempt = 0; attempt < 3; attempt++) {
+    for (let attempt = 0; attempt < 2; attempt++) {
       try {
         const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
+          signal: AbortSignal.timeout(10000),
           body: JSON.stringify({
             contents: [{
               parts: [
@@ -307,7 +308,7 @@ async function startBot() {
         if (res.status === 404) break;
         lastErr = msg;
         if (res.status === 503 || res.status === 429 || msg.toLowerCase().includes("high demand")) {
-          await new Promise(r => setTimeout(r, 2500 * (attempt + 1)));
+          await new Promise(r => setTimeout(r, 1500));
           continue;
         }
         break;
@@ -423,6 +424,7 @@ sock.ev.on("messages.upsert", async ({ messages, type }) => {
               new Promise((_, rej) => setTimeout(() => rej(new Error("WhatsApp image download timed out.")), 15000))
             ]);
             const buffer = Buffer.concat(chunks);
+            if (!buffer.length) throw new Error("Could not download the replied photo. Try resending the photo and replying again.");
             const mimeType = imgMsg.mimetype || "image/jpeg";
             const apiKey = process.env.GEMINI_API_KEY;
 
