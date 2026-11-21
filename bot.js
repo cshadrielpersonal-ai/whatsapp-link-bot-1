@@ -263,61 +263,7 @@ async function startBot() {
 
   sock.ev.on("creds.update", saveCreds);
 
-  async function editImageWithGemini(apiKey, mimeType, base64Data, editInstruction) {
-  const models = [
-    "gemini-3.1-flash-lite-image",
-    "gemini-3.1-flash-image",
-    "gemini-nano-banana-2.1",
-    "gemini-2.5-flash-image"
-  ];
-
-  let lastErr = "Gemini image edit failed.";
-  for (const model of models) {
-    for (let attempt = 0; attempt < 2; attempt++) {
-      try {
-        const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          signal: AbortSignal.timeout(25000),
-          body: JSON.stringify({
-            contents: [{
-              parts: [
-                { inlineData: { mimeType, data: base64Data } },
-                { text: editInstruction }
-              ]
-            }],
-            generationConfig: {
-              responseModalities: ["TEXT", "IMAGE"]
-            }
-          })
-        });
-        const data = await res.json();
-        if (res.ok) {
-          const parts = data.candidates?.[0]?.content?.parts || [];
-          const imgPart = parts.find(p => p.inlineData?.data);
-          if (imgPart?.inlineData?.data) {
-            return Buffer.from(imgPart.inlineData.data, "base64");
-          }
-          const txtPart = parts.find(p => p.text)?.text;
-          if (txtPart) lastErr = txtPart.slice(0, 120);
-        } else {
-          lastErr = data.error?.message || `HTTP ${res.status}`;
-          if (res.status === 404 || res.status === 429) break;
-          if (res.status === 503) {
-            await new Promise(r => setTimeout(r, 2000));
-            continue;
-          }
-        }
-        break;
-      } catch (e) {
-        lastErr = e.message;
-      }
-    }
-  }
-  throw new Error(lastErr);
-}
-
-async function callGeminiVision(apiKey, mimeType, base64Data, promptText) {
+  async function callGeminiVision(apiKey, mimeType, base64Data, promptText) {
   const models = ["gemini-3.8-flash", "gemini-3.8-flash-lite"];
   let lastErr = "Gemini vision request failed.";
   for (const model of models) {
@@ -424,8 +370,7 @@ sock.ev.on("messages.upsert", async ({ messages, type }) => {
 
 • *.ai <question>* — Ask Gemini AI anything
 • *.ai <question>* (on/reply to photo) — Describe or analyze a photo
-• *.draw <description>* — Generate or edit an image (reply to photo to edit)
-• *.cartoon* (on/reply to photo) — Turn any photo into cartoon style
+• *.draw <description>* — Generate an AI image from text
 • *.reset* — Clear AI chat memory
 • *.del* (reply) — Delete a bot message
 • *.ping* — Check bot status
@@ -434,80 +379,19 @@ sock.ev.on("messages.upsert", async ({ messages, type }) => {
         continue;
       }
 
-      // Helper: Upload WhatsApp image buffer to temporary host for direct image-to-image editing
-      const uploadTempImage = async (buffer, mimeType) => {
-        const ext = mimeType.includes("png") ? "png" : "jpg";
-        // Primary: litterbox.catbox.moe (returns direct raw image CDN URL, no hotlink block)
-        try {
-          const form = new FormData();
-          form.append("reqtype", "fileupload");
-          form.append("time", "1h");
-          form.append("fileToUpload", new Blob([buffer], { type: mimeType }), `photo.${ext}`);
-          const res = await fetch("https://litterbox.catbox.moe/resources/internals/api.php", {
-            method: "POST",
-            body: form,
-            signal: AbortSignal.timeout(15000)
-          });
-          if (res.ok) {
-            const directUrl = (await res.text()).trim();
-            if (directUrl.startsWith("https://")) return directUrl;
-          }
-        } catch (_) {}
-
-        // Fallback: tmpfiles.org
-        const form2 = new FormData();
-        form2.append("file", new Blob([buffer], { type: mimeType }), `photo.${ext}`);
-        const upRes = await fetch("https://tmpfiles.org/api/v1/upload", {
-          method: "POST",
-          body: form2,
-          signal: AbortSignal.timeout(15000)
-        });
-        if (!upRes.ok) throw new Error(`Temp upload failed (${upRes.status})`);
-        const upJson = await upRes.json();
-        const pageUrl = upJson?.data?.url;
-        if (!pageUrl) throw new Error("No URL returned from temp upload");
-        return pageUrl.replace("tmpfiles.org/", "tmpfiles.org/dl/");
-      };
-
-      // 2A. .draw <description> command (Text-to-image AND real Image-to-Image editing)
+      // 2A. .draw <description> command (Text-to-image only)
       if (lowerText.startsWith(".draw")) {
         const prompt = cleanText.slice(5).trim();
         if (!prompt) {
-          await sock.sendMessage(remoteJid, { text: "⚠️ Describe what to draw or how to edit a replied photo.\nExample: *.draw a futuristic city at sunset*\nOr reply to a photo: *.draw change background to a garden*" }, { quoted: msg });
+          await sock.sendMessage(remoteJid, { text: "⚠️ Describe what to draw.\nExample: *.draw a futuristic city at sunset*" }, { quoted: msg });
           continue;
         }
-        const rawContext = innerMsg?.extendedTextMessage?.contextInfo || msg.message?.extendedTextMessage?.contextInfo || msg.message?.ephemeralMessage?.message?.extendedTextMessage?.contextInfo;
-        const quoted = unwrap(rawContext?.quotedMessage);
-        const imgMsg = innerMsg?.imageMessage || quoted?.imageMessage;
 
-        await sock.sendMessage(remoteJid, { text: imgMsg ? "🎨 Editing your photo, please wait..." : "🎨 Creating your image, please wait..." }, { quoted: msg });
+        await sock.sendMessage(remoteJid, { text: "🎨 Creating your image, please wait..." }, { quoted: msg });
         try {
           let imgBuffer = null;
-
-          if (imgMsg) {
-            const { downloadContentFromMessage } = await import("@whiskeysockets/baileys");
-            const stream = await downloadContentFromMessage(imgMsg, "image");
-            const chunks = [];
-            await Promise.race([
-              (async () => {
-                for await (const chunk of stream) chunks.push(chunk);
-              })(),
-              new Promise((_, rej) => setTimeout(() => rej(new Error("WhatsApp image download timed out.")), 15000))
-            ]);
-            const buffer = Buffer.concat(chunks);
-            if (!buffer.length) throw new Error("Downloaded image was empty. Try resending the photo.");
-            const mimeType = imgMsg.mimetype || "image/jpeg";
-            const apiKey = process.env.GEMINI_API_KEY;
-
-            imgBuffer = await editImageWithGemini(
-              apiKey,
-              mimeType,
-              buffer.toString("base64"),
-              `Edit this exact photo: ${prompt}. Keep the exact same person, face, identity, and pose from the input photo completely unchanged.`
-            );
-          } else {
-            // Standard Text-to-Image generation
-            for (const model of ["flux", "turbo"]) {
+          for (const model of ["flux", "turbo"]) {
+            for (let retry = 0; retry < 2; retry++) {
               try {
                 const seed = Math.floor(Math.random() * 1000000);
                 const imgUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}?width=1024&height=1024&seed=${seed}&model=${model}&nologo=true`;
@@ -519,53 +403,18 @@ sock.ev.on("messages.upsert", async ({ messages, type }) => {
                     break;
                   }
                 }
+                if (res.status === 429 || res.status === 503) {
+                  await new Promise(r => setTimeout(r, 2500));
+                }
               } catch (_) {}
             }
+            if (imgBuffer) break;
           }
 
-          if (!imgBuffer) throw new Error("Image server is busy. Please try again in 10 seconds.");
+          if (!imgBuffer) throw new Error("Image generator is busy. Try again in a few seconds.");
           await sock.sendMessage(remoteJid, { image: imgBuffer, caption: `🎨 *${prompt}*` }, { quoted: msg });
         } catch (err) {
           await sock.sendMessage(remoteJid, { text: `❌ Drawing failed: ${err.message}` }, { quoted: msg });
-        }
-        continue;
-      }
-
-      // 2B. .cartoon command (True pixel-level Gemini image-to-image cartoon edit)
-      if (lowerText.startsWith(".cartoon")) {
-        const rawContext = innerMsg?.extendedTextMessage?.contextInfo || msg.message?.extendedTextMessage?.contextInfo || msg.message?.ephemeralMessage?.message?.extendedTextMessage?.contextInfo;
-        const quoted = unwrap(rawContext?.quotedMessage);
-        const imgMsg = innerMsg?.imageMessage || quoted?.imageMessage;
-        if (!imgMsg) {
-          await sock.sendMessage(remoteJid, { text: "⚠️ Reply to any photo with *.cartoon* (or send a photo with *.cartoon* as caption)!" }, { quoted: msg });
-          continue;
-        }
-        await sock.sendMessage(remoteJid, { text: "✨ Turning photo into cartoon style, please wait..." }, { quoted: msg });
-        try {
-          const { downloadContentFromMessage } = await import("@whiskeysockets/baileys");
-          const stream = await downloadContentFromMessage(imgMsg, "image");
-          const chunks = [];
-          await Promise.race([
-            (async () => {
-              for await (const chunk of stream) chunks.push(chunk);
-            })(),
-            new Promise((_, rej) => setTimeout(() => rej(new Error("WhatsApp image download timed out.")), 15000))
-          ]);
-          const buffer = Buffer.concat(chunks);
-          if (!buffer.length) throw new Error("Downloaded image was empty.");
-          const mimeType = imgMsg.mimetype || "image/jpeg";
-          const apiKey = process.env.GEMINI_API_KEY;
-
-          const imgBuffer = await editImageWithGemini(
-            apiKey,
-            mimeType,
-            buffer.toString("base64"),
-            "Transform this exact photo into a vibrant colorful 2D cartoon anime illustration with clean outlines and expressive shading, keeping the exact same person, face, clothing, pose, and background."
-          );
-
-          await sock.sendMessage(remoteJid, { image: imgBuffer, caption: "✨ *Cartoon Style Applied!*" }, { quoted: msg });
-        } catch (err) {
-          await sock.sendMessage(remoteJid, { text: `❌ Cartoon edit failed: ${err.message}` }, { quoted: msg });
         }
         continue;
       }
