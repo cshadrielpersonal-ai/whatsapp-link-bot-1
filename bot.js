@@ -405,7 +405,8 @@ sock.ev.on("messages.upsert", async ({ messages, type }) => {
           await sock.sendMessage(remoteJid, { text: "⚠️ Describe what to draw or how to edit a replied photo.\nExample: *.draw a futuristic city at sunset*\nOr reply to a photo: *.draw change background to a garden*" }, { quoted: msg });
           continue;
         }
-        const quoted = unwrap(innerMsg?.extendedTextMessage?.contextInfo?.quotedMessage);
+        const rawContext = innerMsg?.extendedTextMessage?.contextInfo || msg.message?.extendedTextMessage?.contextInfo || msg.message?.ephemeralMessage?.message?.extendedTextMessage?.contextInfo;
+        const quoted = unwrap(rawContext?.quotedMessage);
         const imgMsg = innerMsg?.imageMessage || quoted?.imageMessage;
 
         await sock.sendMessage(remoteJid, { text: imgMsg ? "🎨 Editing your photo, please wait..." : "🎨 Creating your image, please wait..." }, { quoted: msg });
@@ -431,7 +432,8 @@ sock.ev.on("messages.upsert", async ({ messages, type }) => {
             for (const model of ["kontext", "flux"]) {
               try {
                 const seed = Math.floor(Math.random() * 1000000);
-                const editUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}?model=${model}&image=${encodeURIComponent(publicImgUrl)}&width=1024&height=1024&seed=${seed}&nologo=true`;
+                const preservePrompt = `Keep the exact same person, face, clothing, and pose from this photo completely unchanged, and only apply this edit: ${prompt}`;
+                const editUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(preservePrompt)}?model=${model}&image=${encodeURIComponent(publicImgUrl)}&width=1024&height=1024&seed=${seed}&nologo=true`;
                 const res = await fetch(editUrl, { signal: AbortSignal.timeout(30000) });
                 if (res.ok) {
                   const candidate = Buffer.from(await res.arrayBuffer());
@@ -470,7 +472,8 @@ sock.ev.on("messages.upsert", async ({ messages, type }) => {
 
       // 2B. .cartoon command (Direct Image-to-Image cartoon transformation)
       if (lowerText.startsWith(".cartoon")) {
-        const quoted = unwrap(innerMsg?.extendedTextMessage?.contextInfo?.quotedMessage);
+        const rawContext = innerMsg?.extendedTextMessage?.contextInfo || msg.message?.extendedTextMessage?.contextInfo || msg.message?.ephemeralMessage?.message?.extendedTextMessage?.contextInfo;
+        const quoted = unwrap(rawContext?.quotedMessage);
         const imgMsg = innerMsg?.imageMessage || quoted?.imageMessage;
         if (!imgMsg) {
           await sock.sendMessage(remoteJid, { text: "⚠️ Reply to any photo with *.cartoon* (or send a photo with *.cartoon* as caption)!" }, { quoted: msg });
@@ -519,7 +522,8 @@ sock.ev.on("messages.upsert", async ({ messages, type }) => {
 
       // 2C. .ai with an attached or replied-to photo (describe/analyze image)
       if (lowerText.startsWith(".ai")) {
-        const quoted = unwrap(innerMsg?.extendedTextMessage?.contextInfo?.quotedMessage);
+        const rawContext = innerMsg?.extendedTextMessage?.contextInfo || msg.message?.extendedTextMessage?.contextInfo || msg.message?.ephemeralMessage?.message?.extendedTextMessage?.contextInfo;
+        const quoted = unwrap(rawContext?.quotedMessage);
         const imgMsg = innerMsg?.imageMessage || quoted?.imageMessage;
         if (imgMsg) {
           const questionText = cleanText.slice(3).trim() || "Describe this photo in detail.";
