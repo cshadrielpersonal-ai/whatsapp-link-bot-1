@@ -380,7 +380,25 @@ sock.ev.on("messages.upsert", async ({ messages, type }) => {
         continue;
       }
 
-      // 2A. .draw <description> command (Supports both new generation & photo editing)
+      // Helper: Upload WhatsApp image buffer to temporary host for direct image-to-image editing
+      const uploadTempImage = async (buffer, mimeType) => {
+        const ext = mimeType.includes("png") ? "png" : "jpg";
+        const form = new FormData();
+        form.append("file", new Blob([buffer], { type: mimeType }), `photo.${ext}`);
+        const upRes = await fetch("https://tmpfiles.org/api/v1/upload", {
+          method: "POST",
+          body: form,
+          signal: AbortSignal.timeout(15000)
+        });
+        if (!upRes.ok) throw new Error(`Temp upload failed (${upRes.status})`);
+        const upJson = await upRes.json();
+        const pageUrl = upJson?.data?.url;
+        if (!pageUrl) throw new Error("No URL returned from temp upload");
+        // Convert https://tmpfiles.org/12345/photo.jpg -> https://tmpfiles.org/dl/12345/photo.jpg
+        return pageUrl.replace("tmpfiles.org/", "tmpfiles.org/dl/");
+      };
+
+      // 2A. .draw <description> command (Text-to-image AND real Image-to-Image editing)
       if (lowerText.startsWith(".draw")) {
         const prompt = cleanText.slice(5).trim();
         if (!prompt) {
@@ -392,10 +410,10 @@ sock.ev.on("messages.upsert", async ({ messages, type }) => {
 
         await sock.sendMessage(remoteJid, { text: imgMsg ? "🎨 Editing your photo, please wait..." : "🎨 Creating your image, please wait..." }, { quoted: msg });
         try {
-          let finalPrompt = prompt;
+          let imgBuffer = null;
 
-          // If replying to or attaching a photo, use Gemini Vision to combine photo details + edit request
           if (imgMsg) {
+            // Direct Image-to-Image editing (preserves the actual subject/face from your photo!)
             const { downloadContentFromMessage } = await import("@whiskeysockets/baileys");
             const stream = await downloadContentFromMessage(imgMsg, "image");
             const chunks = [];
@@ -406,29 +424,30 @@ sock.ev.on("messages.upsert", async ({ messages, type }) => {
               new Promise((_, rej) => setTimeout(() => rej(new Error("WhatsApp image download timed out.")), 15000))
             ]);
             const buffer = Buffer.concat(chunks);
-            if (!buffer.length) throw new Error("Could not download the replied photo. Try resending the photo and replying again.");
+            if (!buffer.length) throw new Error("Downloaded image was empty. Try resending the photo.");
             const mimeType = imgMsg.mimetype || "image/jpeg";
-            const apiKey = process.env.GEMINI_API_KEY;
+            const publicImgUrl = await uploadTempImage(buffer, mimeType);
 
-            try {
-              finalPrompt = await callGeminiVision(
-                apiKey,
-                mimeType,
-                buffer.toString("base64"),
-                `Look at this photo and apply this edit instruction: "${prompt}". Write a single concise 45-word image generation prompt describing the exact same person/subject, appearance, clothing, and pose from the photo, but with the requested edit applied. Output ONLY the final image prompt.`
-              );
-            } catch (visionErr) {
-              console.log("[DRAW] Vision busy, falling back to direct prompt:", visionErr.message);
-              finalPrompt = `high quality detailed scene, ${prompt}`;
-            }
-          }
-
-          let imgBuffer = null;
-          for (const model of ["flux", "turbo"]) {
-            for (let retry = 0; retry < 2; retry++) {
+            for (const model of ["kontext", "flux"]) {
               try {
                 const seed = Math.floor(Math.random() * 1000000);
-                const imgUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(finalPrompt)}?width=1024&height=1024&seed=${seed}&model=${model}&nologo=true`;
+                const editUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}?model=${model}&image=${encodeURIComponent(publicImgUrl)}&width=1024&height=1024&seed=${seed}&nologo=true`;
+                const res = await fetch(editUrl, { signal: AbortSignal.timeout(30000) });
+                if (res.ok) {
+                  const candidate = Buffer.from(await res.arrayBuffer());
+                  if (candidate.length > 2000) {
+                    imgBuffer = candidate;
+                    break;
+                  }
+                }
+              } catch (_) {}
+            }
+          } else {
+            // Standard Text-to-Image generation
+            for (const model of ["flux", "turbo"]) {
+              try {
+                const seed = Math.floor(Math.random() * 1000000);
+                const imgUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}?width=1024&height=1024&seed=${seed}&model=${model}&nologo=true`;
                 const res = await fetch(imgUrl, { signal: AbortSignal.timeout(25000) });
                 if (res.ok) {
                   const candidate = Buffer.from(await res.arrayBuffer());
@@ -437,15 +456,11 @@ sock.ev.on("messages.upsert", async ({ messages, type }) => {
                     break;
                   }
                 }
-                if (res.status === 429 || res.status === 503) {
-                  await new Promise(r => setTimeout(r, 3000));
-                }
               } catch (_) {}
             }
-            if (imgBuffer) break;
           }
-          if (!imgBuffer) throw new Error("Image generator is busy due to rapid requests. Wait 10 seconds and try again.");
 
+          if (!imgBuffer) throw new Error("Image server is busy. Please try again in 10 seconds.");
           await sock.sendMessage(remoteJid, { image: imgBuffer, caption: `🎨 *${prompt}*` }, { quoted: msg });
         } catch (err) {
           await sock.sendMessage(remoteJid, { text: `❌ Drawing failed: ${err.message}` }, { quoted: msg });
@@ -453,7 +468,7 @@ sock.ev.on("messages.upsert", async ({ messages, type }) => {
         continue;
       }
 
-      // 2B. .cartoon command (With download timeout & flux/turbo renderer fallback)
+      // 2B. .cartoon command (Direct Image-to-Image cartoon transformation)
       if (lowerText.startsWith(".cartoon")) {
         const quoted = unwrap(innerMsg?.extendedTextMessage?.contextInfo?.quotedMessage);
         const imgMsg = innerMsg?.imageMessage || quoted?.imageMessage;
@@ -463,7 +478,6 @@ sock.ev.on("messages.upsert", async ({ messages, type }) => {
         }
         await sock.sendMessage(remoteJid, { text: "✨ Turning photo into cartoon style, please wait..." }, { quoted: msg });
         try {
-          console.log("[CARTOON] Downloading image from WhatsApp...");
           const { downloadContentFromMessage } = await import("@whiskeysockets/baileys");
           const stream = await downloadContentFromMessage(imgMsg, "image");
           const chunks = [];
@@ -471,30 +485,20 @@ sock.ev.on("messages.upsert", async ({ messages, type }) => {
             (async () => {
               for await (const chunk of stream) chunks.push(chunk);
             })(),
-            new Promise((_, rej) => setTimeout(() => rej(new Error("WhatsApp image download timed out. Try resending the photo.")), 15000))
+            new Promise((_, rej) => setTimeout(() => rej(new Error("WhatsApp image download timed out.")), 15000))
           ]);
           const buffer = Buffer.concat(chunks);
           if (!buffer.length) throw new Error("Downloaded image was empty.");
-
           const mimeType = imgMsg.mimetype || "image/jpeg";
-          const apiKey = process.env.GEMINI_API_KEY;
+          const publicImgUrl = await uploadTempImage(buffer, mimeType);
 
-          console.log("[CARTOON] Analyzing image with Gemini...");
-          const sceneDesc = await callGeminiVision(
-            apiKey,
-            mimeType,
-            buffer.toString("base64"),
-            "Write a concise 40-word visual image prompt describing the exact subject, face/hair/clothing, pose, colors, and background in this photo so an artist can draw it in vibrant 2D cartoon anime style. Output ONLY the prompt."
-          );
-          console.log("[CARTOON] Prompt:", sceneDesc);
-
-          const cartoonPrompt = `vibrant colorful 2D cartoon anime illustration, clean bold outlines, studio anime shading, ${sceneDesc}`;
+          const cartoonPrompt = "Transform this exact photo into a vibrant colorful 2D cartoon anime illustration with clean outlines and expressive shading, keeping the exact same person, face, pose, and background";
           let imgBuffer = null;
-          for (const model of ["flux", "turbo"]) {
+          for (const model of ["kontext", "flux"]) {
             try {
               const seed = Math.floor(Math.random() * 1000000);
-              const imgUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(cartoonPrompt)}?width=1024&height=1024&seed=${seed}&model=${model}&nologo=true`;
-              const imgRes = await fetch(imgUrl, { signal: AbortSignal.timeout(25000) });
+              const imgUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(cartoonPrompt)}?model=${model}&image=${encodeURIComponent(publicImgUrl)}&width=1024&height=1024&seed=${seed}&nologo=true`;
+              const imgRes = await fetch(imgUrl, { signal: AbortSignal.timeout(30000) });
               if (imgRes.ok) {
                 const candidate = Buffer.from(await imgRes.arrayBuffer());
                 if (candidate.length > 2000) {
@@ -502,15 +506,12 @@ sock.ev.on("messages.upsert", async ({ messages, type }) => {
                   break;
                 }
               }
-            } catch (e) {
-              console.log(`[CARTOON] Model ${model} failed:`, e.message);
-            }
+            } catch (_) {}
           }
-          if (!imgBuffer) throw new Error("Cartoon image renderer timed out. Please try again.");
+          if (!imgBuffer) throw new Error("Cartoon renderer is busy. Please try again in 10 seconds.");
 
           await sock.sendMessage(remoteJid, { image: imgBuffer, caption: "✨ *Cartoon Style Applied!*" }, { quoted: msg });
         } catch (err) {
-          console.error("[CARTOON] Error:", err.message);
           await sock.sendMessage(remoteJid, { text: `❌ Cartoon edit failed: ${err.message}` }, { quoted: msg });
         }
         continue;
